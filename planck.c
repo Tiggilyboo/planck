@@ -6,75 +6,56 @@
 #include <linux/i2c-dev.h>
 #include <linux/interrupt.h>
 
-#include "planck.h"
+// MCP23017 Operating address
+#define I2C_BASE      0xFF110000
+
+#define MPC23017_GPIOA_MODE		      0x00
+#define MPC23017_GPIOB_MODE		      0x01
+#define MPC23017_GPIOA_PULLUPS_MODE	0x0c
+#define MPC23017_GPIOB_PULLUPS_MODE	0x0d
+#define MPC23017_GPIOA_READ         0x12
+#define MPC23017_GPIOB_READ         0x13
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");
 MODULE_DESCRIPTION("Planck i2c keyboard driver for mcp23017");
 MODULE_VERSION("0.1");
+MODULE_INFO(intree, "Y");
 
-struct planck_device {
-  struct i2c_client *client;
-};
+static struct of_device_id planck_ids[] = {{.compatible = "planck"},{}};
+static const struct i2c_device_id planck_id[] = { {"planck", 0}, {}};
 
-static int planck_i2c_probe(
-    struct i2c_client *client, 
-    const struct i2c_device_id *id) 
-{
-  struct planck_device *dev;
-
-  if(i2c_check_functionality(client->adapter,
-    I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA | I2C_FUNC_SMBUS_I2C_BLOCK)){
-    printk(KERN_ERR "%s: needed i2c functionality is not supported\n", __func__);
-    return -ENODEV;
-  }
-
-  dev = kzalloc(sizeof(struct planck_device), GFP_KERNEL);
-  if(dev == NULL){
-    printk(KERN_ERR "%s: no memory", __func__);
-    return -ENOMEM;
-  }
-
-  dev->client = client;
-  i2c_set_clientdata(client, dev);
-
+static int planck_probe(struct i2c_client *client, const struct i2c_device_id *id) {
+  printk("planck: probe!!!");
   return 0;
 }
 
-static int planck_i2c_remove(struct i2c_client *client)
-{
-  struct planck_client *dev = i2c_get_clientdata(client);
-
-  kfree(dev);
-
-  return 0;
+static int planck_remove(struct i2c_client *client) {
+  printk("planck: remove called"); 
+  return 0;  
 }
 
-static const struct i2c_device_id planck_i2c_id[] = {
-  { "planck_i2c_client", 0x20 },
-  { }
-};
-static struct i2c_driver planck_i2c_driver = {
-  .probe = planck_i2c_probe,
-  .remove = planck_i2c_remove,
-  .id_table = planck_i2c_id,
+MODULE_DEVICE_TABLE(i2c, planck_id);
+
+static struct i2c_driver planck_driver = {
   .driver = {
-    .name = "planck_i2c_client",
+    .name = "planck",
     .owner = THIS_MODULE,
+    .of_match_table = of_match_ptr(planck_ids),
   },
+  .probe = planck_probe,
+  .remove = planck_remove,
+  .id_table = planck_id,
 };
 
-static int __init planck_init(void)
-{
-  printk("Initialising planck kernel driver...\n");
-
-  return i2c_add_driver(&planck_i2c_driver);
+static int __init planck_init(void) {
+  printk("planck: init");
+  i2c_add_driver(&planck_driver);
+  return 0;
 }
-
-static void __exit planck_exit(void)
-{
-  printk("Exiting planck kernel driver...\n");
-  i2c_del_driver(&planck_i2c_driver);
+static void __exit planck_exit(void) {
+  printk("planck: exited...");
+  i2c_del_driver(&planck_driver);
 }
 
 module_init(planck_init);
