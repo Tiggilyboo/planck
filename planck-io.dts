@@ -1,0 +1,46 @@
+/dts-v1/;
+
+/ {
+	compatible = "rockchip,rk3399";
+  
+  fragment@0 {
+		target-path = "/i2c@ff120000";
+
+		__overlay__ {
+      status = "okay"; 
+    };
+  };
+
+  fragment@1 {
+    target-path = "/pinctrl/gpio0@ff720000";
+
+    __overlay__ {
+      planck_pins: planck_pins {
+        rockchip,pins = <16>;
+        rockchip,function = <0>;
+      };
+    };
+  };
+
+	fragment@2 {
+		target-path = "/i2c@ff120000";
+
+		__overlay__ {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      planck: planck@27 {
+        compatible = "planck";
+        reg = <0x27>;
+        gpio-controller;
+        #gpio-cells = <0x02>;
+        #interrupt-cells = <0x02>;
+        interrupt-parent-path = "/pinctrl/gpio0@ff720000";
+        interrupts = <16 0x02>;
+        interrupt-controller;
+
+        status = "okay";
+      };
+		};
+	};
+};
