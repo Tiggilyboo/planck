@@ -53,4 +53,3 @@ static struct of_device_id planck_ids[] = {{.compatible = "planck"},{}};
 static const struct i2c_device_id planck_id[] = { {"planck", 0}, {}};
 
 static irq_handler_t planck_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs);
-
