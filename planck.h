@@ -7,7 +7,7 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 
-#define GPIO_INTERRUPT    7
+#define GPIO_INTERRUPT    34
 
 #define MCP23017_IODIRA   0x00
 #define MCP23017_IPOLA    0x02

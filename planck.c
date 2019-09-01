@@ -53,15 +53,21 @@ static int planck_probe(struct i2c_client *client, const struct i2c_device_id *i
   if(ret != 0) goto i2c_err;
 
   // Setup pullups
-  ret = i2c_write_byte(client, MCP23017_GPPUA, 0x00);
+  ret = i2c_write_byte(client, MCP23017_GPPUA, 0xff);
   if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_GPPUB, 0x00);
+  ret = i2c_write_byte(client, MCP23017_GPPUB, 0xff);
   if(ret != 0) goto i2c_err;
 
   // Setup interrupts (all handled/high)
   ret = i2c_write_byte(client, MCP23017_GPINTENA, 0xff);
   if(ret != 0) goto i2c_err;
   ret = i2c_write_byte(client, MCP23017_GPINTENB, 0xff);
+
+  // Setup interrupt mirrorring
+  ret = i2c_write_byte(client, MCP23017_IOCONA, 0x40);
+  if(ret != 0) goto i2c_err;
+  ret = i2c_write_byte(client, MCP23017_IOCONB, 0x40);
+
 
   goto i2c_ok;
 i2c_err:
@@ -117,8 +123,8 @@ static int __init planck_init(void) {
   }
   gpio_request(GPIO_INTERRUPT, "gpio_interrupt");
   gpio_direction_input(GPIO_INTERRUPT);
-  gpio_set_debounce(GPIO_INTERRUPT, 50);
-  gpio_export(GPIO_INTERRUPT, true);
+  //gpio_set_debounce(GPIO_INTERRUPT, 50);
+  gpio_export(GPIO_INTERRUPT, false);
 
   // irq
   irq_number = gpio_to_irq(GPIO_INTERRUPT);
