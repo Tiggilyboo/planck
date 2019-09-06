@@ -16,7 +16,7 @@
 
     __overlay__ {
       planck_pins: planck_pins {
-        rockchip,pins = <16>;
+        rockchip,pins = <32>;
         rockchip,function = <0>;
       };
     };
@@ -33,11 +33,12 @@
         compatible = "planck";
         reg = <0x27>;
         gpio-controller;
-        #gpio-cells = <0x02>;
-        #interrupt-cells = <0x02>;
+        #gpio-cells = <2>;
+        #interrupt-cells = <2>;
         interrupt-parent-path = "/pinctrl/gpio0@ff720000";
-        interrupts = <16 0x02>;
+        interrupts = <32 2>;
         interrupt-controller;
+        microchip,irq-mirror;
 
         status = "okay";
       };

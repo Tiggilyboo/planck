@@ -1,51 +1,96 @@
 #include "planck.h"
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Simon Willshire");
-MODULE_DESCRIPTION("Planck i2c keyboard driver for mcp23017");
-MODULE_VERSION("0.1");
-MODULE_INFO(intree, "Y");
-
-static unsigned int irq_number;
-static struct planck_device *device;
-
 static int i2c_read_byte(struct i2c_client *client, unsigned char command) {
-  int ret;
-  ret = i2c_smbus_read_byte_data(client, command);
-  printk(KERN_DEBUG "planck: reading reg %d returned value %d\n", command, ret);
-
-  return ret;
+  return i2c_smbus_read_byte_data(client, command);
 }
-
 static int i2c_write_byte(struct i2c_client *client, int reg, int value) {
-  int ret;
-  ret = i2c_smbus_write_byte_data(client, reg, value);
-  printk(KERN_DEBUG "planck: writing reg %d with value %d", reg, value);
+  return i2c_smbus_write_byte_data(client, reg, value);
+}
+static uint16_t planck_read_state(struct planck_device *device, int reg)
+{
+  uint16_t ba;
+  uint8_t a;
 
-  return ret;
+  a = i2c_read_byte(device->client, reg); 
+  ba = i2c_read_byte(device->client, reg+1);
+  ba <<= 8;
+  ba |= a;
+  printk(KERN_DEBUG "planck: state is now: "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba>>8), BYTE_TO_BIN(ba));
+
+  return ba;
 }
 
-static int planck_probe(struct i2c_client *client, const struct i2c_device_id *id) {
-  int ret;
-  printk("planck: probe!!!");
+static void planck_work_handler(struct work_struct *w)
+{
+  struct planck_i2c_work *work = (struct planck_i2c_work*)w;
+  struct planck_device *dev = work->device;
+  unsigned long irq_flags = work->irq_flags;
+ 
+  printk("planck: work handler called with flags %d and device %d", irq_flags, dev == NULL ? 1 : 0);
+  
+  dev->state = planck_read_state(dev, MCP23017_INTCAPA);
+  spin_unlock_irqrestore(&dev->irq_lock, irq_flags);
 
+  kfree(w);
+
+  return;
+}
+static int planck_queue_i2c_work(struct planck_device *device, unsigned long irq_flags)
+{
+  struct planck_i2c_work* work = (struct planck_i2c_work*)kmalloc(sizeof(struct planck_i2c_work), GFP_KERNEL);
+  if(!work) 
+    return -ENOMEM;
+
+  INIT_WORK((struct work_struct*)work, planck_work_handler);
+  work->device = device;
+  work->irq_flags = irq_flags;
+
+  return queue_work(device->read_wq, (struct work_struct*)work);
+}
+
+static int planck_configure_gpio(struct planck_device *device)
+{
+  int res;
+  printk("planck: configuring GPIO...\n");
+
+  res = gpio_is_valid(GPIO_INTERRUPT);
+  if(!res)
+  {
+    printk(KERN_INFO "planck: invalid interrupt GPIO pin %d\n", GPIO_INTERRUPT);
+    return -ENODEV;
+  }
+  gpio_request(GPIO_INTERRUPT, "gpio_interrupt");
+  gpio_direction_input(GPIO_INTERRUPT);
+  gpio_set_value(GPIO_INTERRUPT, 0);
+  gpio_set_debounce(GPIO_INTERRUPT, GPIO_DEBOUNCE);
+
+  // irq
+  device->irq_number = gpio_to_irq(GPIO_INTERRUPT);
+  printk(KERN_DEBUG "planck: the interrupt gpio pin %d is mapped to irq %d\n", GPIO_INTERRUPT, device->irq_number);
+
+  res = request_irq(device->irq_number, (irq_handler_t)planck_gpio_interrupt, IRQF_TRIGGER_RISING, "planck_interrupt", device);
+  printk(KERN_DEBUG "planck: the interrupt request result is %d\n", res);
+  
+  return res;
+}
+
+static int planck_probe(struct i2c_client *client, const struct i2c_device_id *id) 
+{
+  struct planck_device *device;
+  unsigned long flags;
+  int ret;
+
+  printk(KERN_DEBUG "planck: probe!!!");
   if(!i2c_check_functionality(client->adapter, 
-        I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
+        I2C_FUNC_SMBUS_BYTE_DATA | 
+        I2C_FUNC_SMBUS_WORD_DATA |
         I2C_FUNC_SMBUS_I2C_BLOCK))
   {
     printk(KERN_ERR "planck: %s needed i2c functionality is not supported\n", __func__);
     return -ENODEV;
   }
-  device = kzalloc(sizeof(struct planck_device), GFP_KERNEL);
-  if(device == NULL)
-  {
-    printk(KERN_ERR "planck: %s: no memory\n", __func__);
-    return -ENOMEM;
-  }
-  printk(KERN_DEBUG "planck: probed, set device client\n");
-  device->client = client;
+  printk(KERN_DEBUG "planck: configuring i2c");
 
-  printk(KERN_DEBUG "planck: setting up inputs and pullups");
   // Setup all inputs
   ret = i2c_write_byte(client, MCP23017_IODIRA, 0xff);
   if(ret != 0) goto i2c_err;
@@ -57,44 +102,86 @@ static int planck_probe(struct i2c_client *client, const struct i2c_device_id *i
   if(ret != 0) goto i2c_err;
   ret = i2c_write_byte(client, MCP23017_GPPUB, 0xff);
   if(ret != 0) goto i2c_err;
+ 
+  // Setup interrupt mirrorring disable SEQOP, polarity HIGH 
+  ret = i2c_write_byte(client, MCP23017_IOCONA, 0x62);
+  if(ret != 0) goto i2c_err;
+  ret = i2c_write_byte(client, MCP23017_IOCONB, 0x62);
+  if(ret != 0) goto i2c_err;
+ 
+  // Setup interrupt compare register
+  ret = i2c_write_byte(client, MCP23017_INTCONA, 0x00);
+  if(ret != 0) goto i2c_err;
+  ret = i2c_write_byte(client, MCP23017_INTCONB, 0x00);
+  if(ret != 0) goto i2c_err;
 
-  // Setup interrupts (all handled/high)
+  // Setup interrupt default value register
+  ret = i2c_write_byte(client, MCP23017_DEFVALA, 0x00);
+  if(ret != 0) goto i2c_err;
+  ret = i2c_write_byte(client, MCP23017_DEFVALB, 0x00);
+  if(ret != 0) goto i2c_err;
+  
+  // Setup interrupt on change
   ret = i2c_write_byte(client, MCP23017_GPINTENA, 0xff);
   if(ret != 0) goto i2c_err;
   ret = i2c_write_byte(client, MCP23017_GPINTENB, 0xff);
-
-  // Setup interrupt mirrorring
-  ret = i2c_write_byte(client, MCP23017_IOCONA, 0x40);
   if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_IOCONB, 0x40);
 
-
+  printk(KERN_DEBUG "planck: i2c configured\n");
   goto i2c_ok;
+
 i2c_err:
-    printk(KERN_ERR "planck: unable to write to config register, returned error code %d\n", ret);
-    return ret;
+  printk(KERN_ERR "planck: unable to write to i2c register, returned error code %d\n", ret);
+  return ret;
 
 i2c_ok:
+  printk(KERN_DEBUG "planck: setting up device...\n");
+  device = devm_kzalloc(&client->dev, sizeof(struct planck_device), GFP_KERNEL);
+  if(device == NULL)
+    return -ENOMEM; 
+
+  device->client = client;
+  device->read_wq = create_workqueue("planck_workqueue");
+  if(device->read_wq == NULL)
+    return -ENOMEM;
+
+  spin_lock_init(&device->irq_lock); 
+
+  ret = planck_configure_gpio(device);
+  if(ret != 0)
+  {
+    printk(KERN_ERR "planck: unable to configure gpio, returned: %d\n", ret);
+    return ret;
+  }
+  spin_lock_irqsave(&device->irq_lock, flags);
+
+  i2c_set_clientdata(client, device);
+  device->state = planck_read_state(device, MCP23017_INTCAPA);
+
+  spin_unlock_irqrestore(&device->irq_lock, flags);
+
+  printk(KERN_DEBUG "planck: probed.\n");
+
   return 0;
 }
 
 static int planck_remove(struct i2c_client *client) {
   struct planck_device *dev;
   dev = i2c_get_clientdata(client);
+
+  free_irq(dev->irq_number, dev);
+  flush_workqueue(dev->read_wq);
+  destroy_workqueue(dev->read_wq);
+  gpio_free(GPIO_INTERRUPT);
   kfree(dev);
-  if(device != NULL){
-    kfree(device);
-  }
 
   printk(KERN_DEBUG "planck: removed\n"); 
   return 0;  
 }
 
-MODULE_DEVICE_TABLE(i2c, planck_id);
-
 static struct i2c_driver planck_driver = {
   .driver = {
-    .name = "planck",
+    .name = DEVICE_NAME,
     .owner = THIS_MODULE,
     .of_match_table = of_match_ptr(planck_ids),
   },
@@ -104,75 +191,41 @@ static struct i2c_driver planck_driver = {
 };
 
 static int __init planck_init(void) {
+  int res;
   printk(KERN_DEBUG "planck: initialising...");
 
-  // i2c
-  int res;
   res = i2c_add_driver(&planck_driver);
   if(res != 0) {
     printk(KERN_DEBUG "planck: driver registration failed, module not inserted.\n");
     return res;
   }
 
-  // GPIO
-  res = gpio_is_valid(GPIO_INTERRUPT);
-  if(!res)
-  {
-    printk(KERN_INFO "planck: invalid interrupt GPIO pin %d\n", GPIO_INTERRUPT);
-    return -ENODEV;
-  }
-  gpio_request(GPIO_INTERRUPT, "gpio_interrupt");
-  gpio_direction_input(GPIO_INTERRUPT);
-  //gpio_set_debounce(GPIO_INTERRUPT, 50);
-  gpio_export(GPIO_INTERRUPT, false);
-
-  // irq
-  irq_number = gpio_to_irq(GPIO_INTERRUPT);
-  printk(KERN_DEBUG "planck: the interrupt is mapped to irq %d\n", irq_number);
-
-  res = request_irq(irq_number, (irq_handler_t) planck_interrupt, IRQF_TRIGGER_RISING, "planck_interrupt", "planck");
-  printk(KERN_DEBUG "planck: the interrupt request result is %d\n", res);
-
   printk(KERN_DEBUG "planck: inited\n");
   return res;
 }
 
-static void __exit planck_exit(void) {
+static void __exit planck_exit(void) 
+{
   printk(KERN_DEBUG "planck: exiting...");
-  
-  // i2c
   i2c_del_driver(&planck_driver);
-
-  // GPIO & irq
-  gpio_unexport(GPIO_INTERRUPT);
-  free_irq(irq_number, "planck");
-  gpio_free(GPIO_INTERRUPT);
-
   printk("planck: exited");
 }
 
-static irq_handler_t planck_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs){
-  printk(KERN_DEBUG "planck: interrupted with irq %d for device '%p'\n", irq, dev_id);
-  if(device == NULL || device->client == NULL)
-  {
-    printk(KERN_ERR "planck: interrupt received, but no i2c device has been set up!\n");
-    return (irq_handler_t)IRQ_NONE;
-  }
-  uint16_t ba = 0;
-  uint8_t a;
+static irq_handler_t planck_gpio_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs)
+{  
+  struct planck_device *device = dev_id;
+  unsigned long flags;
+  int ret;
 
-  // read the i2c
-  a = i2c_read_byte(device->client, MCP23017_GPIOA); 
-  printk(KERN_DEBUG "planck: read GPIO A: "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(a));
+  printk(KERN_DEBUG "planck: gpio interrupted with irq %d\n", irq); 
 
-  ba = i2c_read_byte(device->client, MCP23017_GPIOB);
-  printk(KERN_DEBUG "planck: read GPIO B: "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba));
+  if(device == NULL)
+    return (irq_handler_t)IRQ_HANDLED;
 
-  ba <<= 8;
-  ba |= a;
-  printk(KERN_DEBUG "planck: read u16 as: "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba>>8), BYTE_TO_BIN(ba));
+  spin_lock_irqsave(&device->irq_lock, flags);
 
-  device->state = ba;
+  ret = planck_queue_i2c_work(device, flags);
+  printk(KERN_DEBUG "planck: queued i2c work returned %d", ret);
 
   return (irq_handler_t)IRQ_HANDLED;
 }
