@@ -11,39 +11,57 @@ static uint16_t planck_read_state(struct planck_device *device, int reg)
   uint16_t ba;
   uint8_t a;
 
-  a = i2c_read_byte(device->client, reg); 
-  ba = i2c_read_byte(device->client, reg+1);
+  a = i2c_read_byte(device->i2c, reg); 
+  ba = i2c_read_byte(device->i2c, reg+1);
   ba <<= 8;
   ba |= a;
   printk(KERN_DEBUG "planck: state is now: "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba>>8), BYTE_TO_BIN(ba));
 
   return ba;
 }
-
 static void planck_work_handler(struct work_struct *w)
 {
-  struct planck_i2c_work *work = (struct planck_i2c_work*)w;
+  struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
   struct planck_device *dev = work->device;
-  unsigned long irq_flags = work->irq_flags;
+  uint16_t state = dev->state;
  
-  printk("planck: work handler called with flags %d and device %d", irq_flags, dev == NULL ? 1 : 0);
-  
   dev->state = planck_read_state(dev, MCP23017_INTCAPA);
-  spin_unlock_irqrestore(&dev->irq_lock, irq_flags);
 
-  kfree(w);
+  // Nothing changed
+  if(state == dev->state)
+    return;
+  
+  // Figure out what just happened...
+  // XXXX XXXX XXXX YYYY
+  state = ~state;
 
-  return;
+  int x;
+  int y;
+  for(y = 0; y < 4; y++) {
+    int yn = (state & (1 << y));
+
+    for(x = 0; x < 12; x++) {
+      int xn = (state & (1 << (x + 4)));
+
+      if(!!yn && !!xn){
+        printk(KERN_DEBUG "pressed (%d, %d) state = %d", x, y, state);
+      }
+    }
+  }
+  
+  // cleanup
+  kfree(work);
 }
-static int planck_queue_i2c_work(struct planck_device *device, unsigned long irq_flags)
+
+static int planck_queue_i2c_work(struct planck_device *device)
 {
   struct planck_i2c_work* work = (struct planck_i2c_work*)kmalloc(sizeof(struct planck_i2c_work), GFP_KERNEL);
-  if(!work) 
+  if(!work){
     return -ENOMEM;
+  }
 
   INIT_WORK((struct work_struct*)work, planck_work_handler);
   work->device = device;
-  work->irq_flags = irq_flags;
 
   return queue_work(device->read_wq, (struct work_struct*)work);
 }
@@ -72,6 +90,43 @@ static int planck_configure_gpio(struct planck_device *device)
   printk(KERN_DEBUG "planck: the interrupt request result is %d\n", res);
   
   return res;
+}
+
+static int planck_init_input(struct planck_device* device)
+{
+  struct input_dev* input;
+  const int num_keycodes = ARRAY_SIZE(planck_keycodes);
+  int ret;
+
+  input = input_allocate_device();
+  if(device->input == NULL)
+    return -ENOMEM;
+  input->evbit[0] = BIT_MASK(EV_KEY);
+  input->keycode = planck_keycodes;
+  input->keycodesize = sizeof(unsigned short); 
+  input->keycodemax = num_keycodes;
+
+  for(ret = 0; ret < num_keycodes; ret++)
+  {
+    if(planck_keycodes[ret] != KEY_RESERVED)
+      set_bit(planck_keycodes[ret], input->keybit);
+  }
+
+  ret = input_register_device(input);
+  if(!ret)
+  {
+    printk(KERN_ERR "planck: unable to register input device, register returned %d\n", ret);
+    goto input_err;
+  }
+
+  printk(KERN_DEBUG "planck: initialised input device.");
+  device->input = input;
+
+  return ret;
+
+input_err:
+  input_free_device(device->input);
+  return -ENODEV;
 }
 
 static int planck_probe(struct i2c_client *client, const struct i2c_device_id *id) 
@@ -108,19 +163,7 @@ static int planck_probe(struct i2c_client *client, const struct i2c_device_id *i
   if(ret != 0) goto i2c_err;
   ret = i2c_write_byte(client, MCP23017_IOCONB, 0x62);
   if(ret != 0) goto i2c_err;
- 
-  // Setup interrupt compare register
-  ret = i2c_write_byte(client, MCP23017_INTCONA, 0x00);
-  if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_INTCONB, 0x00);
-  if(ret != 0) goto i2c_err;
 
-  // Setup interrupt default value register
-  ret = i2c_write_byte(client, MCP23017_DEFVALA, 0x00);
-  if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_DEFVALB, 0x00);
-  if(ret != 0) goto i2c_err;
-  
   // Setup interrupt on change
   ret = i2c_write_byte(client, MCP23017_GPINTENA, 0xff);
   if(ret != 0) goto i2c_err;
@@ -139,29 +182,32 @@ i2c_ok:
   device = devm_kzalloc(&client->dev, sizeof(struct planck_device), GFP_KERNEL);
   if(device == NULL)
     return -ENOMEM; 
+  device->i2c = client;
 
-  device->client = client;
+  ret = planck_init_input(device);
+  if(!ret){
+    printk(KERN_ERR "planck: unable to initialise input device, returned %d\n", ret);
+    return -ENODEV;
+  }
+
   device->read_wq = create_workqueue("planck_workqueue");
   if(device->read_wq == NULL)
     return -ENOMEM;
 
-  spin_lock_init(&device->irq_lock); 
-
   ret = planck_configure_gpio(device);
-  if(ret != 0)
-  {
+  if(!ret){
     printk(KERN_ERR "planck: unable to configure gpio, returned: %d\n", ret);
     return ret;
   }
-  spin_lock_irqsave(&device->irq_lock, flags);
 
+  // Read the initial state
+  spin_lock_init(&device->irq_lock); 
+  spin_lock_irqsave(&device->irq_lock, flags);
   i2c_set_clientdata(client, device);
   device->state = planck_read_state(device, MCP23017_INTCAPA);
-
   spin_unlock_irqrestore(&device->irq_lock, flags);
 
   printk(KERN_DEBUG "planck: probed.\n");
-
   return 0;
 }
 
@@ -169,10 +215,17 @@ static int planck_remove(struct i2c_client *client) {
   struct planck_device *dev;
   dev = i2c_get_clientdata(client);
 
+  printk(KERN_DEBUG "1");
   free_irq(dev->irq_number, dev);
+  printk(KERN_DEBUG "2");
   flush_workqueue(dev->read_wq);
+  printk(KERN_DEBUG "3");
   destroy_workqueue(dev->read_wq);
+  printk(KERN_DEBUG "4");
+  input_unregister_device(dev->input);
+  printk(KERN_DEBUG "5");
   gpio_free(GPIO_INTERRUPT);
+  printk(KERN_DEBUG "6");
   kfree(dev);
 
   printk(KERN_DEBUG "planck: removed\n"); 
@@ -217,15 +270,12 @@ static irq_handler_t planck_gpio_interrupt(unsigned int irq, void *dev_id, struc
   unsigned long flags;
   int ret;
 
-  printk(KERN_DEBUG "planck: gpio interrupted with irq %d\n", irq); 
-
   if(device == NULL)
     return (irq_handler_t)IRQ_HANDLED;
 
   spin_lock_irqsave(&device->irq_lock, flags);
-
-  ret = planck_queue_i2c_work(device, flags);
-  printk(KERN_DEBUG "planck: queued i2c work returned %d", ret);
+  ret = planck_queue_i2c_work(device);
+  spin_unlock_irqrestore(&device->irq_lock, flags);
 
   return (irq_handler_t)IRQ_HANDLED;
 }

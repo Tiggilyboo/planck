@@ -1,14 +1,17 @@
-#include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
+
 #include <linux/i2c.h>
-#include <linux/i2c-dev.h>
 #include <linux/gpio.h>
+#include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 
+#include "planck_keycodes.h"
+
 #define DEVICE_NAME       "planck"
+
 #define GPIO_INTERRUPT    32
 #define GPIO_DEBOUNCE     50
 
@@ -54,17 +57,18 @@ MODULE_INFO(intree, "Y");
 
 struct planck_device {
   struct workqueue_struct* read_wq;
-  struct i2c_client *client;
+  
+  struct i2c_client *i2c;
   spinlock_t irq_lock;
   unsigned int irq_number;
-  unsigned int irq_count;
   uint16_t state;
+
+  struct input_dev *input;
 };
 
 struct planck_i2c_work {
   struct work_struct work;
   struct planck_device *device;
-  unsigned long irq_flags;
 };
 
 static struct of_device_id planck_ids[] = {{.compatible = DEVICE_NAME},{}};
