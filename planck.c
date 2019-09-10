@@ -52,10 +52,13 @@ static void planck_work_handler(struct work_struct *w)
 
       if(!!yn && !!xn){
         unsigned short keycode = planck_keycodes[(y * 12) + x];
+        
         printk(KERN_DEBUG "planck: pressed (%d, %d), keymap = %d, state = %d", x, y, keycode, state);
+        input_event(dev->input, EV_KEY, keycode, 1);
       }
     }
   }
+  input_sync(dev->input);
   
   // cleanup
 finish:
