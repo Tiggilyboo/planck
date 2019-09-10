@@ -15,6 +15,7 @@ static uint16_t planck_read_state(struct planck_device *device, int reg)
   ba = i2c_read_byte(device->i2c, reg+1);
   ba <<= 8;
   ba |= a;
+  
   printk(KERN_DEBUG "planck: state is now: "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba>>8), BYTE_TO_BIN(ba));
 
   return ba;
@@ -23,16 +24,22 @@ static void planck_work_handler(struct work_struct *w)
 {
   struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
   struct planck_device *dev = work->device;
-  uint16_t state = dev->state;
- 
+  uint16_t state;
+
+  if(dev == NULL)
+    return;
+
+  state = dev->state;
   dev->state = planck_read_state(dev, MCP23017_INTCAPA);
 
   // Nothing changed
-  if(state == dev->state)
-    return;
+  if(state != 0 && state == dev->state)
+    goto finish;
   
   // Figure out what just happened...
   // XXXX XXXX XXXX YYYY
+  if(state == 0)
+    goto finish;
   state = ~state;
 
   int x;
@@ -44,13 +51,16 @@ static void planck_work_handler(struct work_struct *w)
       int xn = (state & (1 << (x + 4)));
 
       if(!!yn && !!xn){
-        printk(KERN_DEBUG "pressed (%d, %d) state = %d", x, y, state);
+        unsigned short keycode = planck_keycodes[(y * 12) + x];
+        printk(KERN_DEBUG "planck: pressed (%d, %d), keymap = %d, state = %d", x, y, keycode, state);
       }
     }
   }
   
   // cleanup
-  kfree(work);
+finish:
+  printk(KERN_DEBUG "planck: cleaning up work_handler");
+  kfree((void*)w);
 }
 
 static int planck_queue_i2c_work(struct planck_device *device)
@@ -89,18 +99,20 @@ static int planck_configure_gpio(struct planck_device *device)
   res = request_irq(device->irq_number, (irq_handler_t)planck_gpio_interrupt, IRQF_TRIGGER_RISING, "planck_interrupt", device);
   printk(KERN_DEBUG "planck: the interrupt request result is %d\n", res);
   
-  return res;
+  return 0;
 }
 
 static int planck_init_input(struct planck_device* device)
 {
   struct input_dev* input;
-  const int num_keycodes = ARRAY_SIZE(planck_keycodes);
   int ret;
+  const int num_keycodes = ARRAY_SIZE(planck_keycodes);
 
+  printk(KERN_DEBUG "planck: initialising input...");
   input = input_allocate_device();
-  if(device->input == NULL)
+  if(input == NULL)
     return -ENOMEM;
+  
   input->evbit[0] = BIT_MASK(EV_KEY);
   input->keycode = planck_keycodes;
   input->keycodesize = sizeof(unsigned short); 
@@ -113,19 +125,19 @@ static int planck_init_input(struct planck_device* device)
   }
 
   ret = input_register_device(input);
-  if(!ret)
+  if(ret != 0)
   {
     printk(KERN_ERR "planck: unable to register input device, register returned %d\n", ret);
     goto input_err;
   }
 
-  printk(KERN_DEBUG "planck: initialised input device.");
+  printk(KERN_DEBUG "planck: initialised input device with %d keycodes", num_keycodes);
   device->input = input;
 
   return ret;
 
 input_err:
-  input_free_device(device->input);
+  input_unregister_device(input);
   return -ENODEV;
 }
 
@@ -185,19 +197,19 @@ i2c_ok:
   device->i2c = client;
 
   ret = planck_init_input(device);
-  if(!ret){
+  if(ret != 0){
     printk(KERN_ERR "planck: unable to initialise input device, returned %d\n", ret);
-    return -ENODEV;
+    goto free_input;
   }
 
   device->read_wq = create_workqueue("planck_workqueue");
   if(device->read_wq == NULL)
-    return -ENOMEM;
+    goto free_queue;
 
   ret = planck_configure_gpio(device);
-  if(!ret){
+  if(ret != 0){
     printk(KERN_ERR "planck: unable to configure gpio, returned: %d\n", ret);
-    return ret;
+    return -ENODEV;
   }
 
   // Read the initial state
@@ -207,25 +219,35 @@ i2c_ok:
   device->state = planck_read_state(device, MCP23017_INTCAPA);
   spin_unlock_irqrestore(&device->irq_lock, flags);
 
+  goto probe_ok;
+
+free_queue:
+  destroy_workqueue(device->read_wq);
+free_input:
+  input_unregister_device(device->input);
+  return -ENODEV;
+
+probe_ok:
   printk(KERN_DEBUG "planck: probed.\n");
   return 0;
 }
 
 static int planck_remove(struct i2c_client *client) {
-  struct planck_device *dev;
-  dev = i2c_get_clientdata(client);
-
-  printk(KERN_DEBUG "1");
+  struct planck_device *dev = i2c_get_clientdata(client);
+ 
+  printk(KERN_DEBUG "planck: disable_irq");
+  disable_irq(dev->irq_number);
+  printk(KERN_DEBUG "planck: free_irq");
   free_irq(dev->irq_number, dev);
-  printk(KERN_DEBUG "2");
-  flush_workqueue(dev->read_wq);
-  printk(KERN_DEBUG "3");
-  destroy_workqueue(dev->read_wq);
-  printk(KERN_DEBUG "4");
-  input_unregister_device(dev->input);
-  printk(KERN_DEBUG "5");
+  printk(KERN_DEBUG "planck: gpio_free");
   gpio_free(GPIO_INTERRUPT);
-  printk(KERN_DEBUG "6");
+  printk(KERN_DEBUG "planck: flush_workqueue");
+  flush_workqueue(dev->read_wq);
+  printk(KERN_DEBUG "planck: destroy_workqueue");
+  destroy_workqueue(dev->read_wq);
+  printk(KERN_DEBUG "planck: input_unregister_device");
+  input_unregister_device(dev->input);
+  printk(KERN_DEBUG "planck: freeing device memory");
   kfree(dev);
 
   printk(KERN_DEBUG "planck: removed\n"); 

@@ -76,4 +76,6 @@ static const struct i2c_device_id planck_id[] = { {DEVICE_NAME, 0}, {}};
 static irq_handler_t planck_gpio_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs);
 static void planck_work_handler(struct work_struct *w);
 
+DECLARE_WORK(workqueue, planck_work_handler);
+
 MODULE_DEVICE_TABLE(i2c, planck_id);
