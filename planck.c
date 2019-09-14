@@ -22,39 +22,46 @@ static uint16_t planck_read_state(struct planck_device *device, int reg)
 }
 static void planck_work_handler(struct work_struct *w)
 {
-  struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
-  struct planck_device *dev = work->device;
-  uint16_t state;
-
-  if(dev == NULL)
-    return;
-
-  state = dev->state;
-  dev->state = planck_read_state(dev, MCP23017_INTCAPA);
-
-  // Nothing changed
-  if(state != 0 && state == dev->state)
-    goto finish;
-  
-  // Figure out what just happened...
-  // XXXX XXXX XXXX YYYY
-  if(state == 0)
-    goto finish;
-  state = ~state;
-
   int x;
   int y;
+  uint16_t state;
+  uint16_t last_state;
+  unsigned short keycode;
+  struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
+  struct planck_device *dev = work->device;
+
+  if(dev == NULL){
+    printk(KERN_ERR "planck: work_struct has no device!");
+    goto finish;
+  }
+
+  last_state = dev->state;
+  dev->state = ~planck_read_state(dev, MCP23017_INTCAPA);
+  state = dev->state;
+
+  // Nothing changed
+  if(state == last_state || ~last_state == 0)
+    goto finish;
+
   for(y = 0; y < 4; y++) {
-    int yn = (state & (1 << y));
+    int currY = (state & (1 << y));
+    int lastY = (last_state & (1 << y));
 
     for(x = 0; x < 12; x++) {
-      int xn = (state & (1 << (x + 4)));
+      int currX = (state & (1 << (x + 4)));
+      int lastX = (last_state & (1 << (x + 4)));
 
-      if(!!yn && !!xn){
-        unsigned short keycode = planck_keycodes[(y * 12) + x];
-        
-        printk(KERN_DEBUG "planck: pressed (%d, %d), keymap = %d, state = %d", x, y, keycode, state);
+      // Currently pressed, was not pressed before (Pressed)
+      if(!!currX && !!currY && (!lastY || !lastX)){
+        keycode = planck_keycodes[(y * 12) + x];
+        printk(KERN_DEBUG "planck: pressed (%d, %d), keymap = %d, state = %d, last = %d", x, y, keycode, state, last_state);
         input_event(dev->input, EV_KEY, keycode, 1);
+      } 
+      // No longer pressed, pressed before (Released)
+      else if((!currX || !currY) && (!!lastY && !!lastX)){
+        keycode = planck_keycodes[(y * 12) + x];
+        printk(KERN_DEBUG "planck: released (%d, %d), keymap = %d, state = %d, last = %d", x, y, keycode, state, last_state);
+        input_event(dev->input, EV_KEY, keycode, 0);
       }
     }
   }
