@@ -8,6 +8,7 @@
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 
+#include "planck_hid.h"
 #include "planck_keycodes.h"
 
 #define DEVICE_NAME       "planck"
@@ -51,7 +52,7 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");
-MODULE_DESCRIPTION("Planck i2c keyboard driver for mcp23017");
+MODULE_DESCRIPTION("Planck internal i2c and external HID keyboard driver");
 MODULE_VERSION("0.1");
 MODULE_INFO(intree, "Y");
 
@@ -63,7 +64,9 @@ struct planck_device {
   unsigned int irq_number;
   uint16_t state;
 
+  bool internal;
   struct input_dev *input;
+  struct platform_device *hid;
 };
 
 struct planck_i2c_work {
