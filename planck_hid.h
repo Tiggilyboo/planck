@@ -54,6 +54,8 @@ static int planck_config_hid(struct usb_configuration *c)
   struct hidg_func_node *e, *n;
   int status = 0;
 
+  printk(KERN_DEBUG "planck_config_hid");
+
   if(gadget_is_otg(c->cdev->gadget)){
     c->descriptors = otg_desc;
     c->bmAttributes |= USB_CONFIG_ATT_WAKEUP;
@@ -94,6 +96,8 @@ static int planck_hid_bind(struct usb_composite_dev *cdev){
   struct hidg_func_node *n, *m;
   struct f_hid_opts *hid_opts;
   int status, funcs = 0;
+
+  printk(KERN_DEBUG "planck: hid bind.");
 
   list_for_each(tmp, &hidg_func_list)
     funcs++;
@@ -153,6 +157,8 @@ put:
 
 static int planck_hid_unbind(struct usb_composite_dev *cdev){
   struct hidg_func_node *n;
+  
+  printk(KERN_DEBUG "planck: hid unbind.");
 
   list_for_each_entry(n , &hidg_func_list, node) {
     usb_put_function(n->f);
@@ -166,8 +172,12 @@ static int planck_hid_unbind(struct usb_composite_dev *cdev){
 }
 
 static int hidg_plat_driver_probe(struct platform_device *pdev){
-  struct hidg_func_descriptor *func = dev_get_platdata(&pdev->dev);
+  struct hidg_func_descriptor *func; 
   struct hidg_func_node *entry;
+
+  printk(KERN_DEBUG "planck: hid probe!");
+
+  func = dev_get_platdata(&pdev->dev);
 
   if(!func){
     dev_err(&pdev->dev, "Platform data missing\n");
@@ -186,6 +196,9 @@ static int hidg_plat_driver_probe(struct platform_device *pdev){
 
 static int hidg_plat_driver_remove(struct platform_device *pdev){
   struct hidg_func_node *e, *n;
+
+  printk(KERN_DEBUG "planck: hidg_plat_driver_remove");
+
   list_for_each_entry_safe(e, n, &hidg_func_list, node) {
     list_del(&e->node);
     kfree(e);
@@ -195,7 +208,7 @@ static int hidg_plat_driver_remove(struct platform_device *pdev){
 }
 
 static struct usb_composite_driver hidg_driver = {
-  .name = "planck_hid",
+  .name = "g_hid",
   .dev = &device_desc,
   .strings = dev_strings,
   .max_speed = USB_SPEED_HIGH,

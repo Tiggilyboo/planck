@@ -19,7 +19,7 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 }
 static void planck_process_input(struct planck_device *dev, unsigned short keycode, int layer, int pressed)
 {
-  if(dev == NULL)
+  if(!dev)
     return;
 
   // Switch input modes from internal to external USB mode
@@ -62,10 +62,8 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
 
 static void planck_work_handler(struct work_struct *w)
 {
-  int x;
-  int y;
-  uint16_t state;
-  uint16_t last_state;
+  int x, y;
+  uint16_t state, last_state;
   unsigned short keycode;
   struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
   struct planck_device *dev = work->device;
@@ -169,8 +167,10 @@ static int planck_init_hid(struct planck_device* device)
   if(ret < 0){
     printk(KERN_DEBUG "planck: hid composite probe failed!");
     platform_driver_unregister(&hidg_plat_driver);
+    return ret;
   }
 
+  printk(KERN_DEBUG "planck: hid initialised, setting device pointers.");
   device->hidg_plat = &hidg_plat_driver;
   device->hidg_driver = &hidg_driver;
 
@@ -272,13 +272,13 @@ i2c_ok:
   device->i2c = client;
 
   ret = planck_init_internal_input(device);
-  if(ret != 0){
+  if(!ret){
     printk(KERN_ERR "planck: unable to initialise input device, returned %d\n", ret);
     goto free_input;
   }
   
   ret = planck_init_hid(device);
-  if(ret != 0){
+  if(!ret){
     printk(KERN_ERR "planck: unable to initialise USB HID input device, returned %d\n", ret);
     goto free_hid;
   }
@@ -288,7 +288,7 @@ i2c_ok:
     goto free_queue;
 
   ret = planck_init_gpio(device);
-  if(ret != 0){
+  if(!ret){
     printk(KERN_ERR "planck: unable to configure gpio, returned: %d\n", ret);
     goto free_gpio;
   }
