@@ -1,8 +1,5 @@
 #include "planck.h"
 
-#define MAX_X 12
-#define MAX_Y 4
-
 static int i2c_read_byte(struct i2c_client *client, unsigned char command) {
   return i2c_smbus_read_byte_data(client, command);
 }
@@ -40,7 +37,7 @@ static void planck_process_input(struct planck_device *dev, unsigned short keyco
   if(dev->internal){
     input_event(dev->input, EV_KEY, keycode, pressed);
   } else {
-    
+    //dev->hid 
   }
 }
 static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
@@ -162,11 +159,22 @@ static int planck_init_hid(struct planck_device* device)
 {
   printk(KERN_DEBUG "planck: initialising usb hid input...");
   
-  int ret = platform_device_register(&planck_hid);
-  if(ret)
-    printk(KERN_INFO "planck: hid gadget registration failed!");
+  int ret = platform_driver_probe(&hidg_plat_driver, hidg_plat_driver_probe);
+  if(ret < 0){
+    printk(KERN_DEBUG "planck: hid gadget registration failed!");
+    return ret;
+  }
 
-  device->hid = &planck_hid;
+  ret = usb_composite_probe(&hidg_driver);
+  if(ret < 0){
+    printk(KERN_DEBUG "planck: hid composite probe failed!");
+    platform_driver_unregister(&hidg_plat_driver);
+  }
+
+  device->hidg_plat = &hidg_plat_driver;
+  device->hidg_driver = &hidg_driver;
+
+  return ret;
 }
 
 static int planck_init_internal_input(struct planck_device* device)
@@ -298,7 +306,8 @@ free_gpio:
 free_queue:
   destroy_workqueue(device->read_wq);
 free_hid:
-  platform_device_unregister(device->hid);
+  usb_composite_unregister(device->hidg_driver);
+  platform_driver_unregister(device->hidg_plat);
 free_input:
   input_unregister_device(device->input);
   return -ENODEV;
@@ -323,6 +332,10 @@ static int planck_i2c_remove(struct i2c_client *client) {
   destroy_workqueue(dev->read_wq);
   printk(KERN_DEBUG "planck: input_unregister_device");
   input_unregister_device(dev->input);
+  printk(KERN_DEBUG "planck: usb_composite_unregister");
+  usb_composite_unregister(dev->hidg_driver);
+  printk(KERN_DEBUG "planck: platform_driver_unregister");
+  platform_driver_unregister(dev->hidg_plat);
   printk(KERN_DEBUG "planck: freeing device memory");
   kfree(dev);
 
