@@ -56,8 +56,8 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
     return 2;
   else if (lower)
     return 1;
-  else
-    return 0;
+  
+  return 0;
 }
 
 static void planck_work_handler(struct work_struct *w)
@@ -153,27 +153,31 @@ static int planck_init_gpio(struct planck_device *device)
   
   return 0;
 }
-static int planck_init_hid(struct planck_device* device)
+static int planck_init_hid(void)
 {
-  printk(KERN_DEBUG "planck: initialising usb hid input...");
-  
-  int ret = platform_driver_probe(&hidg_plat_driver, hidg_plat_driver_probe);
-  if(ret < 0){
-    printk(KERN_DEBUG "planck: hid gadget registration failed!");
+  int ret;
+
+  ret = platform_device_register(&planck_hid);
+  if (ret < 0){
+    printk(KERN_ERR "planck: unable to add planck_hid device: %d\n", ret);
     return ret;
   }
 
-  ret = usb_composite_probe(&hidg_driver);
-  if(ret < 0){
-    printk(KERN_DEBUG "planck: hid composite probe failed!");
+  ret = platform_driver_probe(&hidg_plat_driver, planck_hid_plat_driver_probe);
+  if (ret < 0){
+    printk(KERN_ERR "planck: unable to probe platform driver: %d\n", ret);
+    platform_device_unregister(&planck_hid);
+    return ret;
+  }
+
+  ret = usb_composite_probe(&planck_hidg_driver);
+  if (ret < 0){
+    printk(KERN_ERR "planck: unable to probe usb composite driver: %d\n", ret);
     platform_driver_unregister(&hidg_plat_driver);
+    platform_device_unregister(&planck_hid);
     return ret;
-  }
-
-  printk(KERN_DEBUG "planck: hid initialised, setting device pointers.");
-  device->hidg_plat = &hidg_plat_driver;
-  device->hidg_driver = &hidg_driver;
-
+  } 
+  
   return ret;
 }
 
@@ -272,23 +276,17 @@ i2c_ok:
   device->i2c = client;
 
   ret = planck_init_internal_input(device);
-  if(!ret){
+  if(ret != 0){
     printk(KERN_ERR "planck: unable to initialise input device, returned %d\n", ret);
     goto free_input;
   }
   
-  ret = planck_init_hid(device);
-  if(!ret){
-    printk(KERN_ERR "planck: unable to initialise USB HID input device, returned %d\n", ret);
-    goto free_hid;
-  }
-
   device->read_wq = create_workqueue("planck_workqueue");
   if(device->read_wq == NULL)
     goto free_queue;
 
   ret = planck_init_gpio(device);
-  if(!ret){
+  if(ret != 0){
     printk(KERN_ERR "planck: unable to configure gpio, returned: %d\n", ret);
     goto free_gpio;
   }
@@ -305,9 +303,6 @@ i2c_ok:
 free_gpio:
 free_queue:
   destroy_workqueue(device->read_wq);
-free_hid:
-  usb_composite_unregister(device->hidg_driver);
-  platform_driver_unregister(device->hidg_plat);
 free_input:
   input_unregister_device(device->input);
   return -ENODEV;
@@ -332,10 +327,6 @@ static int planck_i2c_remove(struct i2c_client *client) {
   destroy_workqueue(dev->read_wq);
   printk(KERN_DEBUG "planck: input_unregister_device");
   input_unregister_device(dev->input);
-  printk(KERN_DEBUG "planck: usb_composite_unregister");
-  usb_composite_unregister(dev->hidg_driver);
-  printk(KERN_DEBUG "planck: platform_driver_unregister");
-  platform_driver_unregister(dev->hidg_plat);
   printk(KERN_DEBUG "planck: freeing device memory");
   kfree(dev);
 
@@ -356,11 +347,19 @@ static struct i2c_driver planck_driver = {
 
 static int __init planck_init(void) {
   int res;
-  printk(KERN_DEBUG "planck: initialising...");
+  printk(KERN_DEBUG "planck: initialising i2c...");
+
+  printk(KERN_DEBUG "planck: initialising hid...");
+
+  res = planck_init_hid();
+  if (res != 0) {
+    printk(KERN_DEBUG "planck: hid driver initialisation failed.\n");
+    return res;
+  }
 
   res = i2c_add_driver(&planck_driver);
   if(res != 0) {
-    printk(KERN_DEBUG "planck: driver registration failed, module not inserted.\n");
+    printk(KERN_DEBUG "planck: i2c driver registration failed, module not inserted.\n");
     return res;
   }
 
@@ -371,7 +370,16 @@ static int __init planck_init(void) {
 static void __exit planck_exit(void) 
 {
   printk(KERN_DEBUG "planck: exiting...");
+
+  printk(KERN_DEBUG "planck: unregistering hidg plat_driver");
+  platform_driver_unregister(&hidg_plat_driver);
+  printk(KERN_DEBUG "planck: unregistering usb composite driver");
+  usb_composite_unregister(&planck_hidg_driver);
+
+  printk(KERN_DEBUG "planck: deleting i2c driver...");
   i2c_del_driver(&planck_driver);
+
+
   printk("planck: exited");
 }
 

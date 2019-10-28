@@ -8,8 +8,8 @@
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 
-#include "planck_hid.h"
 #include "planck_keycodes.h"
+#include "planck_hid.h"
 
 #define DEVICE_NAME       "planck"
 
@@ -66,8 +66,6 @@ struct planck_device {
 
   bool internal;
   struct input_dev *input;
-  struct platform_driver *hidg_plat;
-  struct usb_composite_driver *hidg_driver;
 };
 
 struct planck_i2c_work {
