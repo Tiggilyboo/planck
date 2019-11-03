@@ -1,11 +1,5 @@
 #include "planck.h"
 
-static int i2c_read_byte(struct i2c_client *client, unsigned char command) {
-  return i2c_smbus_read_byte_data(client, command);
-}
-static int i2c_write_byte(struct i2c_client *client, int reg, int value) {
-  return i2c_smbus_write_byte_data(client, reg, value);
-}
 static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 {
   uint8_t a = i2c_read_byte(device->i2c, reg); 
@@ -17,13 +11,20 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 
   return ba;
 }
-static void planck_process_input(struct planck_device *dev, unsigned short keycode, int layer, int pressed)
+static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
 {
-  if(!dev)
-    return;
+  char report[8];
+  struct hidg_func_node* hfn;
+  struct f_hidg* hidg;
+  unsigned short keycode;
+  int status;
+
+  printk(KERN_INFO "planck: planck_process_input invoked, coord: %d, layer: %d, pressed: %d\n", coord, layer, pressed);
+
+  if(!dev) return;
 
   // Switch input modes from internal to external USB mode
-  if(layer == 3 && keycode == KEY_CONNECT && pressed == 0)
+  if(layer == 3 && coord == KEY_CONNECT && pressed == 0)
   {
     if(dev->internal)
       printk(KERN_DEBUG "planck: switching input mode to usb hid mode!");
@@ -35,10 +36,84 @@ static void planck_process_input(struct planck_device *dev, unsigned short keyco
   }
 
   if(dev->internal){
+    keycode = planck_keycodes[coord];
+    printk(KERN_DEBUG "planck: input_event for keycode %d in state: %d.\n", keycode, pressed);
     input_event(dev->input, EV_KEY, keycode, pressed);
-  } else {
-    //dev->hid 
+    return;
   }
+
+  // External HID input
+  hfn = list_first_entry_or_null(&hidg_func_list, struct hidg_func_node, node);
+  if(hfn == NULL){
+    printk(KERN_ERR "planck: unable to process keystroke, hidg_func_node could not be found in hidg_func_list!");
+    return;
+  }
+  if(hfn->f == NULL){
+    printk(KERN_ERR "planck: hidg_func_node contained null usb_function!");
+    return;
+  }
+  hidg = func_to_hidg(hfn->f); 
+  if(hidg == NULL){
+    printk(KERN_ERR "planck: usb_function was not a f_hidg struct?!");
+    return;
+  }
+
+  while(!(!hidg->write_pending)) {
+    mutex_unlock(&hidg->lock);
+  
+    if(wait_event_interruptible_exclusive(hidg->write_queue, (!hidg->write_pending))){
+      printk(KERN_ERR "planck: unable to wait in hidg write queue?!");
+      return;
+    }
+
+    mutex_lock(&hidg->lock);
+  }
+  mutex_unlock(&hidg->lock);
+
+  // Assemble HID request
+  keycode = planck_hid_keymap[coord];
+
+  // Accumulate modifiers
+  if(keycode == 0x01 || keycode == 0x10 
+      || keycode == 0x02 || keycode == 0x20 
+      || keycode == 0x04 || keycode == 0x40 
+      || keycode == 0x08 || keycode == 0x80){
+    
+    if(!(planck_hid_report[0] & keycode)) {
+      planck_hid_report[0] = planck_hid_report[0] | keycode;
+    }
+
+    // Don't send the mods yet, only with other inputs values!
+    goto process_done;
+  }
+
+  // Use any accumulated keycodes
+  int i;
+  for(i = 0; i < 8; i++)
+    report[i] = planck_hid_report[i];
+
+  // Add any new keycode in the report
+  report[2] = keycode;
+
+  hidg->req->buf = report;
+  hidg->req->status = 0;
+  hidg->req->zero = 0;
+  hidg->req->length = hidg->report_length;
+  hidg->req->complete = f_hidg_req_complete;
+  hidg->req->context = hidg;
+  hidg->write_pending = 1;
+
+  status = usb_ep_queue(hidg->in_ep, hidg->req, GFP_ATOMIC);
+  if(status < 0){
+    printk(KERN_ERR "planck: usb_ep_queue error on int endpoint %zd\n", status);
+    hidg->write_pending = 0;
+    wake_up(&hidg->write_queue);
+  } else  {
+    printk(KERN_DEBUG "planck: send usb_ep_queue request!");
+  }
+
+process_done:
+  mutex_lock(&hidg->lock);
 }
 static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
 {
@@ -48,7 +123,7 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
   // upper: x == 8 (7 when 0 indexed)
   int upper = (prev & (1 << MAX_Y)) && (prev & (1 << (MAX_Y + 7)));
 
-  printk(KERN_DEBUG "planck: upper = %d, lower = %d", upper, lower); 
+  //printk(KERN_DEBUG "planck: upper = %d, lower = %d", upper, lower); 
 
   if(upper && lower)
     return 3;
@@ -64,7 +139,6 @@ static void planck_work_handler(struct work_struct *w)
 {
   int x, y;
   uint16_t state, last_state;
-  unsigned short keycode;
   struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
   struct planck_device *dev = work->device;
 
@@ -93,15 +167,11 @@ static void planck_work_handler(struct work_struct *w)
 
       // Currently pressed, was not pressed before (Pressed)
       if(!!currX && !!currY && (!lastY || !lastX)){
-        keycode = planck_keycodes[layerOffset + (y * MAX_X) + x];
-        printk(KERN_DEBUG "planck: pressed (%d, %d), keymap = %d, state = %d, last = %d", x, y, keycode, state, last_state);
-        planck_process_input(dev, keycode, layer, 1);
+        planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 1);
       } 
       // No longer pressed, pressed before (Released)
       else if((!currX || !currY) && (!!lastY && !!lastX)){
-        keycode = planck_keycodes[layerOffset + (y * MAX_X) + x];
-        printk(KERN_DEBUG "planck: released (%d, %d), keymap = %d, state = %d, last = %d", x, y, keycode, state, last_state);
-        planck_process_input(dev, keycode, layer, 0);
+        planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 0);
       }
     }
   }
@@ -111,7 +181,7 @@ static void planck_work_handler(struct work_struct *w)
 
   // cleanup
 finish:
-  printk(KERN_DEBUG "planck: cleaning up work_handler");
+  //printk(KERN_DEBUG "planck: cleaning up work_handler");
   kfree((void*)w);
 }
 
@@ -153,6 +223,7 @@ static int planck_init_gpio(struct planck_device *device)
   
   return 0;
 }
+
 static int planck_init_hid(void)
 {
   int ret;
@@ -334,7 +405,7 @@ static int planck_i2c_remove(struct i2c_client *client) {
   return 0;  
 }
 
-static struct i2c_driver planck_driver = {
+static struct i2c_driver planck_i2c_driver = {
   .driver = {
     .name = DEVICE_NAME,
     .owner = THIS_MODULE,
@@ -347,7 +418,6 @@ static struct i2c_driver planck_driver = {
 
 static int __init planck_init(void) {
   int res;
-  printk(KERN_DEBUG "planck: initialising i2c...");
 
   printk(KERN_DEBUG "planck: initialising hid...");
 
@@ -357,7 +427,8 @@ static int __init planck_init(void) {
     return res;
   }
 
-  res = i2c_add_driver(&planck_driver);
+  printk(KERN_DEBUG "planck: initialising i2c...");
+  res = i2c_add_driver(&planck_i2c_driver);
   if(res != 0) {
     printk(KERN_DEBUG "planck: i2c driver registration failed, module not inserted.\n");
     return res;
@@ -377,7 +448,7 @@ static void __exit planck_exit(void)
   usb_composite_unregister(&planck_hidg_driver);
 
   printk(KERN_DEBUG "planck: deleting i2c driver...");
-  i2c_del_driver(&planck_driver);
+  i2c_del_driver(&planck_i2c_driver);
 
 
   printk("planck: exited");

@@ -6,6 +6,7 @@
 #include <linux/usb/g_hid.h>
 
 #include "u_hid.h"
+#include "u_f.h"
 
 #define DRIVER_DESC		    "HID Gadget"
 #define DRIVER_VERSION		"2019/10/16"
@@ -114,7 +115,8 @@ static int planck_hid_bind(struct usb_composite_dev *cdev){
     hid_opts = container_of(n->fi, struct f_hid_opts, func_inst);
     hid_opts->subclass = n->func->subclass;
     hid_opts->protocol = n->func->protocol;
-    hid_opts->report_desc_length = n->func->report_length;
+    hid_opts->report_length = n->func->report_length;
+    hid_opts->report_desc_length = n->func->report_desc_length;
     hid_opts->report_desc = n->func->report_desc;
   }
 
@@ -207,6 +209,7 @@ static int planck_hid_plat_driver_remove(struct platform_device *pdev){
   return 0;
 }
 
+
 static struct usb_composite_driver planck_hidg_driver = {
   .name = "planck_hidg_driver",
   .dev = &device_desc,
@@ -220,7 +223,7 @@ static struct platform_driver hidg_plat_driver = {
   .remove = planck_hid_plat_driver_remove,
   .driver = {
     .owner = THIS_MODULE,
-    .name = "hidg",
+    .name = "planck_hidg",
   },
 };
 
@@ -266,7 +269,7 @@ static struct hidg_func_descriptor planck_hid_data = {
 };
 
 static struct platform_device planck_hid = {
-  .name = "hidg",
+  .name = "planck_hidg",
   .id = 0,
   .num_resources = 0,
   .resource = 0,
