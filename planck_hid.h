@@ -141,7 +141,7 @@ static int planck_hid_bind(struct usb_composite_dev *cdev){
     goto free_otg_desc;
 
   usb_composite_overwrite_options(cdev, &coverwrite);
-  dev_info(&gadget->dev, DRIVER_DESC ", version " DRIVER_VERSION "\n");
+  printk(KERN_DEBUG DRIVER_DESC ", version " DRIVER_VERSION "\n");
 
   return 0;
 

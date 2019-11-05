@@ -19,7 +19,10 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");
 MODULE_DESCRIPTION("Planck internal i2c and external HID keyboard driver");
 MODULE_VERSION("0.1");
-MODULE_INFO(intree, "Y");
+
+MODULE_SOFTDEP("pre: libcomposite");
+MODULE_SOFTDEP("pre: usb_f_hid");
+
 
 struct planck_device {
   struct workqueue_struct* read_wq;

@@ -13,7 +13,6 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 }
 static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
 {
-  char report[8];
   struct hidg_func_node* hfn;
   struct f_hidg* hidg;
   unsigned short keycode;
@@ -87,15 +86,20 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     goto process_done;
   }
 
-  // Use any accumulated keycodes
-  int i;
-  for(i = 0; i < 8; i++)
-    report[i] = planck_hid_report[i];
-
   // Add any new keycode in the report
-  report[2] = keycode;
+  planck_hid_report[2] = (char)keycode;
 
-  hidg->req->buf = report;
+  printk(KERN_INFO "planck: trying to send usb hid report: %x, %x, %x, %x, %x, %x, %x, %x", 
+      planck_hid_report[0],
+      planck_hid_report[1],
+      planck_hid_report[2],
+      planck_hid_report[3],
+      planck_hid_report[4],
+      planck_hid_report[5],
+      planck_hid_report[6],
+      planck_hid_report[7]);
+
+  hidg->req->buf = planck_hid_report;
   hidg->req->status = 0;
   hidg->req->zero = 0;
   hidg->req->length = hidg->report_length;
@@ -103,9 +107,24 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
   hidg->req->context = hidg;
   hidg->write_pending = 1;
 
+  printk(KERN_DEBUG "planck: trying to restart out_ep...\n");
+  //usb_ep_disable(hidg->out_ep);
+
+  status = config_ep_by_speed(hfn->f->config->cdev->gadget, hfn->f, hidg->out_ep);
+  if(status){
+    printk(KERN_ERR "planck: config_ep_by_speed FAILED: %d\n", status);
+    goto process_done;
+  }
+  status = usb_ep_enable(hidg->out_ep);
+  if(status < 0){
+    printk(KERN_ERR "planck: enable out endpoint failed: %d", status);
+    goto process_done;
+  }
+
   status = usb_ep_queue(hidg->in_ep, hidg->req, GFP_ATOMIC);
   if(status < 0){
-    printk(KERN_ERR "planck: usb_ep_queue error on int endpoint %zd\n", status);
+    ERROR(hidg->func.config->cdev,
+			"usb_ep_queue error on int endpoint %d\n", status);
     hidg->write_pending = 0;
     wake_up(&hidg->write_queue);
   } else  {
@@ -115,6 +134,7 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
 process_done:
   mutex_lock(&hidg->lock);
 }
+
 static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
 {
   // y = MAX_Y
@@ -124,7 +144,6 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
   int upper = (prev & (1 << MAX_Y)) && (prev & (1 << (MAX_Y + 7)));
 
   //printk(KERN_DEBUG "planck: upper = %d, lower = %d", upper, lower); 
-
   if(upper && lower)
     return 3;
   else if (upper)
