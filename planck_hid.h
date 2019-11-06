@@ -208,7 +208,9 @@ static int planck_hid_plat_driver_remove(struct platform_device *pdev){
 
   return 0;
 }
-
+static void planck_platform_device_release(struct device *dev){
+  printk(KERN_DEBUG "planck: planck_platform_device_release\n");
+}
 
 static struct usb_composite_driver planck_hidg_driver = {
   .name = "planck_hidg_driver",
@@ -274,4 +276,5 @@ static struct platform_device planck_hid = {
   .num_resources = 0,
   .resource = 0,
   .dev.platform_data = &planck_hid_data,
+  .dev.release = planck_platform_device_release,
 };
