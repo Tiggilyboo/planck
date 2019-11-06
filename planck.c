@@ -1,8 +1,4 @@
 #include "planck.h"
-#include <linux/fs.h>
-#include <asm/segment.h>
-#include <asm/uaccess.h>
-#include <linux/buffer_head.h>
 
 static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 {
@@ -15,39 +11,12 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 
   return ba;
 }
-struct file *file_open(const char *path, int flags, int rights) 
-{
-struct file *filp = NULL;
-mm_segment_t oldfs;
-int err = 0;
 
-oldfs = get_fs();
-set_fs(get_ds());
-filp = filp_open(path, flags, rights);
-set_fs(oldfs);
-if (IS_ERR(filp)) {
-err = PTR_ERR(filp);
-return NULL;
-}
-return filp;
-}
-int file_write(struct file *file, unsigned long long offset, unsigned char *data, unsigned int size) 
-{
-mm_segment_t oldfs;
-int ret;
-
-oldfs = get_fs();
-set_fs(get_ds());
-
-ret = vfs_write(file, data, size, &offset);
-
-set_fs(oldfs);
-return ret;
-}
 static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
 {
   struct hidg_func_node* hfn;
   struct f_hidg* hidg;
+  struct file* hidg0;
   unsigned short keycode;
   int status;
 
@@ -67,6 +36,7 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     return;
   }
 
+  // Internal input device
   if(dev->internal){
     keycode = planck_keycodes[coord];
     printk(KERN_DEBUG "planck: input_event for keycode %d in state: %d.\n", keycode, pressed);
@@ -84,7 +54,7 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     printk(KERN_ERR "planck: hidg_func_node contained null usb_function!");
     return;
   }
-  hidg = func_to_hidg(hfn->f); 
+  hidg = func_to_hidg(hfn->f);
   if(hidg == NULL){
     printk(KERN_ERR "planck: usb_function was not a f_hidg struct?!");
     return;
@@ -107,11 +77,17 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
 
     // Don't send the mods yet, only with other inputs values!
     printk(KERN_DEBUG "planck: not sending modifier, no other key pressed yet...");
-    return;
+    goto finished;
+  } else {
+    // Clear the modifier
+    planck_hid_report[0] = 0;
   }
 
   // Add any new keycode in the report
-  planck_hid_report[2] = (char)keycode;
+  if(pressed)
+    planck_hid_report[2] = (char)keycode;
+  else
+    planck_hid_report[2] = 0;
 
   printk(KERN_INFO "planck: trying to send usb hid report: %x, %x, %x, %x, %x, %x, %x, %x", 
       planck_hid_report[0],
@@ -123,23 +99,25 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
       planck_hid_report[6],
       planck_hid_report[7]);
 
-  struct file* hidg0 = file_open("/dev/hidg0", O_RDWR | O_DSYNC, 570);
+  hidg0 = file_open("/dev/hidg0", O_RDWR | O_DSYNC, 570);
   if(!hidg0){
     printk(KERN_ERR "planck: unable to open /dev/hidg0\n");
-    return;
+    goto finished;
   }
   status = file_write(hidg0, 0, planck_hid_report, 8);
   if(status < 0){
     printk(KERN_ERR "planck: unable to write to hidg0: %d\n", status);
-    return;
+    goto finished;
   }
   status = vfs_fsync(hidg0, 0);
   if(!status){
     printk(KERN_ERR "planck: unable to fsync hidg0: %d\n", status);
-    return;
+    goto finished;
   }
 
   printk(KERN_DEBUG "planck: wrote planck_hid_report to /dev/hidg0\n");
+finished:
+  mutex_lock(&hidg->lock);
 }
 
 static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)

@@ -9,6 +9,7 @@
 #include "planck_i2c.h"
 #include "planck_keycodes.h"
 #include "planck_hid.h"
+#include "planck_vfs.h"
 #include "f_hid.h"
 
 #define DEVICE_NAME       "planck"
