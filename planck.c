@@ -11,10 +11,12 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 
   return ba;
 }
+
 static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
 {
   struct hidg_func_node* hfn;
   struct f_hidg* hidg;
+  struct file* hidg0;
   unsigned short keycode;
   int status;
 
@@ -34,6 +36,7 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     return;
   }
 
+  // Internal input device
   if(dev->internal){
     keycode = planck_keycodes[coord];
     printk(KERN_DEBUG "planck: input_event for keycode %d in state: %d.\n", keycode, pressed);
@@ -51,22 +54,12 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     printk(KERN_ERR "planck: hidg_func_node contained null usb_function!");
     return;
   }
-  hidg = func_to_hidg(hfn->f); 
+  hidg = func_to_hidg(hfn->f);
   if(hidg == NULL){
     printk(KERN_ERR "planck: usb_function was not a f_hidg struct?!");
     return;
   }
 
-  while(!(!hidg->write_pending)) {
-    mutex_unlock(&hidg->lock);
-  
-    if(wait_event_interruptible_exclusive(hidg->write_queue, (!hidg->write_pending))){
-      printk(KERN_ERR "planck: unable to wait in hidg write queue?!");
-      return;
-    }
-
-    mutex_lock(&hidg->lock);
-  }
   mutex_unlock(&hidg->lock);
 
   // Assemble HID request
@@ -83,11 +76,18 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     }
 
     // Don't send the mods yet, only with other inputs values!
-    goto process_done;
+    printk(KERN_DEBUG "planck: not sending modifier, no other key pressed yet...");
+    goto finished;
+  } else {
+    // Clear the modifier
+    planck_hid_report[0] = 0;
   }
 
   // Add any new keycode in the report
-  planck_hid_report[2] = (char)keycode;
+  if(pressed)
+    planck_hid_report[2] = (char)keycode;
+  else
+    planck_hid_report[2] = 0;
 
   printk(KERN_INFO "planck: trying to send usb hid report: %x, %x, %x, %x, %x, %x, %x, %x", 
       planck_hid_report[0],
@@ -99,39 +99,24 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
       planck_hid_report[6],
       planck_hid_report[7]);
 
-  hidg->req->buf = planck_hid_report;
-  hidg->req->status = 0;
-  hidg->req->zero = 0;
-  hidg->req->length = hidg->report_length;
-  hidg->req->complete = f_hidg_req_complete;
-  hidg->req->context = hidg;
-  hidg->write_pending = 1;
-
-  printk(KERN_DEBUG "planck: trying to restart out_ep...\n");
-  //usb_ep_disable(hidg->out_ep);
-
-  status = config_ep_by_speed(hfn->f->config->cdev->gadget, hfn->f, hidg->out_ep);
-  if(status){
-    printk(KERN_ERR "planck: config_ep_by_speed FAILED: %d\n", status);
-    goto process_done;
+  hidg0 = file_open("/dev/hidg0", O_RDWR | O_DSYNC, 570);
+  if(!hidg0){
+    printk(KERN_ERR "planck: unable to open /dev/hidg0\n");
+    goto finished;
   }
-  status = usb_ep_enable(hidg->out_ep);
+  status = file_write(hidg0, 0, planck_hid_report, 8);
   if(status < 0){
-    printk(KERN_ERR "planck: enable out endpoint failed: %d", status);
-    goto process_done;
+    printk(KERN_ERR "planck: unable to write to hidg0: %d\n", status);
+    goto finished;
+  }
+  status = vfs_fsync(hidg0, 0);
+  if(!status){
+    printk(KERN_ERR "planck: unable to fsync hidg0: %d\n", status);
+    goto finished;
   }
 
-  status = usb_ep_queue(hidg->in_ep, hidg->req, GFP_ATOMIC);
-  if(status < 0){
-    ERROR(hidg->func.config->cdev,
-			"usb_ep_queue error on int endpoint %d\n", status);
-    hidg->write_pending = 0;
-    wake_up(&hidg->write_queue);
-  } else  {
-    printk(KERN_DEBUG "planck: send usb_ep_queue request!");
-  }
-
-process_done:
+  printk(KERN_DEBUG "planck: wrote planck_hid_report to /dev/hidg0\n");
+finished:
   mutex_lock(&hidg->lock);
 }
 
@@ -156,7 +141,7 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
 
 static void planck_work_handler(struct work_struct *w)
 {
-  int x, y;
+  int x, y, layer, layerOffset;
   uint16_t state, last_state;
   struct planck_i2c_work *work = container_of(w, struct planck_i2c_work, work);
   struct planck_device *dev = work->device;
@@ -174,8 +159,8 @@ static void planck_work_handler(struct work_struct *w)
   if(state == last_state || ~last_state == 0)
     goto finish;
 
-  int layer = planck_layer_handler(dev, last_state, state);
-  int layerOffset = layer * (MAX_X * MAX_Y);
+  layer = planck_layer_handler(dev, last_state, state);
+  layerOffset = layer * (MAX_X * MAX_Y);
   for(y = 0; y < MAX_Y; y++) {
     int currY = (state & (1 << y));
     int lastY = (last_state & (1 << y));
