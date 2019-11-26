@@ -13,8 +13,13 @@
 #include "f_hid.h"
 
 #define DEVICE_NAME       "planck"
-#define GPIO_INTERRUPT    32
 #define GPIO_DEBOUNCE     50
+
+#define GPIO_INTERRUPT    32
+#define GPIO_ROW0         36
+#define GPIO_ROW1         37
+#define GPIO_ROW2         38
+#define GPIO_ROW3         39
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");

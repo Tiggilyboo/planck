@@ -11,14 +11,10 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 
   return ba;
 }
-static uint16_t planck_write_i2c_state(struct planck_device *device, int reg)
+static void planck_write_i2c_state(struct planck_device *device, int reg, int value)
 {
-  uint8_t a = i2c_write_byte(device->i2c, reg); 
-  uint16_t ba = i2c_write_byte(device->i2c, reg+1);
-  ba <<= 8;
-  ba |= a;
-
-  return ba;
+  i2c_write_byte(device->i2c, reg, value); 
+  i2c_write_byte(device->i2c, reg+1, value);
 }
 
 static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
@@ -212,6 +208,27 @@ static int planck_queue_i2c_work(struct planck_device *device)
   return queue_work(device->read_wq, (struct work_struct*)work);
 }
 
+// Setup GPIO output pins to force the i2c pin LOW so we don't have to actively poll and scanthe matrix
+static int planck_init_gpio_row(int gpio)
+{
+  int res;
+  printk("planck: configuring matrix GPIO rows...\n");
+
+  res = gpio_is_valid(gpio);
+  if(!res){
+    printk(KERN_ERR "planck: invalid row GPIO pin %d\n", gpio);
+    return -ENODEV;
+  }
+
+  char gpio_name[10];
+  snprintf(gpio_name, 10, "gpio_row_%d", gpio);
+
+  gpio_request(gpio, gpio_name); 
+  gpio_direction_output(gpio, 1);
+  
+  return 0;
+}
+
 static int planck_init_gpio(struct planck_device *device)
 {
   int res;
@@ -220,9 +237,21 @@ static int planck_init_gpio(struct planck_device *device)
   res = gpio_is_valid(GPIO_INTERRUPT);
   if(!res)
   {
-    printk(KERN_INFO "planck: invalid interrupt GPIO pin %d\n", GPIO_INTERRUPT);
+    printk(KERN_ERR "planck: invalid interrupt GPIO pin %d\n", GPIO_INTERRUPT);
     return -ENODEV;
   }
+
+  // Setup output row GPIO for forcing i2c row scan of columns
+  int rows[4] = { GPIO_ROW0, GPIO_ROW1, GPIO_ROW2, GPIO_ROW3 };
+  int r;
+  for(r = 0; r < 4; r++) {
+    res = planck_init_gpio_row(rows[r]);
+    if(!res){
+      goto free_rows;
+    }
+  }
+
+  // Setup input GPIO for interrupt when i2c state changes
   gpio_request(GPIO_INTERRUPT, "gpio_interrupt");
   gpio_direction_input(GPIO_INTERRUPT);
   gpio_set_value(GPIO_INTERRUPT, 0);
@@ -236,6 +265,14 @@ static int planck_init_gpio(struct planck_device *device)
   printk(KERN_DEBUG "planck: the interrupt request result is %d\n", res);
   
   return 0;
+
+free_rows:
+  while(r > 1){
+    r--;
+    printk(KERN_ERR "planck: unable to initialise row GPIO output %d, freeing it.\n", rows[r]);
+    gpio_free(rows[r]);
+  }
+  return -ENODEV;
 }
 
 static int planck_init_hid(void)
