@@ -37,15 +37,3 @@ static inline struct f_hidg *func_to_hidg(struct usb_function *f)
 	return container_of(f, struct f_hidg, func);
 }
 
-static void f_hidg_req_complete(struct usb_ep *ep, struct usb_request *req)
-{
-	struct f_hidg *hidg = (struct f_hidg *)ep->driver_data;
-
-	if (req->status != 0) {
-		ERROR(hidg->func.config->cdev,
-			"End Point Request ERROR: %d\n", req->status);
-	}
-
-	hidg->write_pending = 0;
-	wake_up(&hidg->write_queue);
-}

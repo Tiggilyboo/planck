@@ -11,6 +11,15 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 
   return ba;
 }
+static uint16_t planck_write_i2c_state(struct planck_device *device, int reg)
+{
+  uint8_t a = i2c_write_byte(device->i2c, reg); 
+  uint16_t ba = i2c_write_byte(device->i2c, reg+1);
+  ba <<= 8;
+  ba |= a;
+
+  return ba;
+}
 
 static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
 {
@@ -151,6 +160,7 @@ static void planck_work_handler(struct work_struct *w)
     goto finish;
   }
 
+  // Store the last state and read the new interrupt state
   last_state = dev->state;
   dev->state = ~planck_read_i2c_state(dev, MCP23017_INTCAPA);
   state = dev->state;
@@ -162,12 +172,12 @@ static void planck_work_handler(struct work_struct *w)
   layer = planck_layer_handler(dev, last_state, state);
   layerOffset = layer * (MAX_X * MAX_Y);
   for(y = 0; y < MAX_Y; y++) {
-    int currY = (state & (1 << y));
-    int lastY = (last_state & (1 << y));
+    int currY = (state & (1 << (y + MAX_X)));
+    int lastY = (last_state & (1 << (y + MAX_X)));
 
     for(x = 0; x < MAX_X; x++) {
-      int currX = (state & (1 << (x + MAX_Y)));
-      int lastX = (last_state & (1 << (x + MAX_Y)));
+      int currX = (state & (1 << x));
+      int lastX = (last_state & (1 << x));
 
       // Currently pressed, was not pressed before (Pressed)
       if(!!currX && !!currY && (!lastY || !lastX)){
@@ -298,7 +308,6 @@ input_err:
 static int planck_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id) 
 {
   struct planck_device *device;
-  unsigned long flags;
   int ret;
 
   printk(KERN_DEBUG "planck: probe!!!");
@@ -336,6 +345,11 @@ static int planck_i2c_probe(struct i2c_client *client, const struct i2c_device_i
   ret = i2c_write_byte(client, MCP23017_GPINTENB, 0xff);
   if(ret != 0) goto i2c_err;
 
+  ret = i2c_write_byte(client, MCP23017_GPIOA, 0x00);
+  if(ret != 0) goto i2c_err;
+  ret = i2c_write_byte(client, MCP23017_GPIOB, 0x00);
+  if(ret != 0) goto i2c_err;
+
   printk(KERN_DEBUG "planck: i2c configured\n");
   goto i2c_ok;
 
@@ -349,6 +363,7 @@ i2c_ok:
   if(device == NULL)
     return -ENOMEM; 
   device->i2c = client;
+  device->internal = 1;
 
   ret = planck_init_internal_input(device);
   if(ret != 0){
@@ -367,11 +382,8 @@ i2c_ok:
   }
 
   // Read the initial state
-  spin_lock_init(&device->irq_lock); 
-  spin_lock_irqsave(&device->irq_lock, flags);
   i2c_set_clientdata(client, device);
   device->state = planck_read_i2c_state(device, MCP23017_INTCAPA);
-  spin_unlock_irqrestore(&device->irq_lock, flags);
 
   goto probe_ok;
 

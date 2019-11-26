@@ -4,11 +4,12 @@
 #include <linux/module.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/g_hid.h>
+#include <linux/of_device.h>
 
 #include "u_hid.h"
 #include "u_f.h"
 
-#define DRIVER_DESC		    "HID Gadget"
+#define DRIVER_DESC		"HID Gadget"
 #define DRIVER_VERSION		"2019/10/16"
 #define HIDG_VENDOR_NUM		0x0525	/* XXX NetChip */
 #define HIDG_PRODUCT_NUM	0xa4ac	/* Linux-USB HID gadget */
@@ -89,6 +90,10 @@ static struct usb_configuration config_driver = {
   .label = DRIVER_DESC,
   .bConfigurationValue = 1,
   .bmAttributes = USB_CONFIG_ATT_SELFPOWER,
+};
+struct platform_object {
+  struct platform_device pdev;
+  char name[];
 };
 
 static int planck_hid_bind(struct usb_composite_dev *cdev){
@@ -208,8 +213,24 @@ static int planck_hid_plat_driver_remove(struct platform_device *pdev){
 
   return 0;
 }
+
 static void planck_platform_device_release(struct device *dev){
   printk(KERN_DEBUG "planck: planck_platform_device_release\n");
+
+  struct platform_object *pa = container_of(dev, struct platform_object, pdev.dev);
+
+  printk(KERN_DEBUG "1");
+  of_device_node_put(&pa->pdev.dev);
+  printk(KERN_DEBUG "2");
+  kfree(pa->pdev.dev.platform_data);
+  printk(KERN_DEBUG "3");
+  kfree(pa->pdev.mfd_cell);
+  printk(KERN_DEBUG "4");
+  kfree(pa->pdev.resource);
+  printk(KERN_DEBUG "5");
+  kfree(pa->pdev.driver_override);
+  printk(KERN_DEBUG "6");
+  kfree(pa);
 }
 
 static struct usb_composite_driver planck_hidg_driver = {
