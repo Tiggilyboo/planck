@@ -14,12 +14,8 @@
 
 #define DEVICE_NAME       "planck"
 #define GPIO_DEBOUNCE     50
-
 #define GPIO_INTERRUPT    32
-#define GPIO_ROW0         36
-#define GPIO_ROW1         37
-#define GPIO_ROW2         38
-#define GPIO_ROW3         39
+#define GPIO_JIFFY_DELAY  60
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");
@@ -29,14 +25,15 @@ MODULE_VERSION("0.1");
 MODULE_SOFTDEP("pre: libcomposite");
 MODULE_SOFTDEP("pre: usb_f_hid");
 
-
 struct planck_device {
   struct workqueue_struct* read_wq;
+  struct workqueue_struct* write_wq;
   
   struct i2c_client *i2c;
   spinlock_t irq_lock;
   unsigned int irq_number;
   uint16_t state;
+  unsigned int gpio_row;
 
   bool internal;
   struct input_dev *input;
@@ -46,12 +43,19 @@ struct planck_i2c_work {
   struct work_struct work;
   struct planck_device *device;
 };
+struct planck_gpio_work {
+  struct work_struct work;
+  struct workqueue_struct* write_wq;
+  unsigned int gpio_row;
+};
 
 static struct of_device_id planck_ids[] = {{.compatible = DEVICE_NAME},{}};
 static const struct i2c_device_id planck_id[] = { {DEVICE_NAME, 0}, {}};
 static irq_handler_t planck_gpio_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs);
-static void planck_work_handler(struct work_struct *w);
+static void planck_i2c_work_handler(struct work_struct *w);
+static void planck_gpio_work_handler(struct work_struct *w);
 
-DECLARE_WORK(workqueue, planck_work_handler);
+// Define which GPIOs are used to output LOW (0) to each matrix row
+static int gpio_rows[] = { 36, 37, 38, 39 }; 
 
 MODULE_DEVICE_TABLE(i2c, planck_id);

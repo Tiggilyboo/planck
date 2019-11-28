@@ -11,11 +11,6 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
 
   return ba;
 }
-static void planck_write_i2c_state(struct planck_device *device, int reg, int value)
-{
-  i2c_write_byte(device->i2c, reg, value); 
-  i2c_write_byte(device->i2c, reg+1, value);
-}
 
 static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
 {
@@ -27,7 +22,8 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
 
   printk(KERN_INFO "planck: planck_process_input invoked, coord: %d, layer: %d, pressed: %d\n", coord, layer, pressed);
 
-  if(!dev) return;
+  if(!dev) 
+    return;
 
   // Switch input modes from internal to external USB mode
   if(layer == 3 && coord == KEY_CONNECT && pressed == 0)
@@ -144,7 +140,28 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
   return 0;
 }
 
-static void planck_work_handler(struct work_struct *w)
+static void planck_gpio_work_handler(struct work_struct* w)
+{
+  struct planck_gpio_work *work = container_of(w, struct planck_gpio_work, work);
+  unsigned int row = work->gpio_row;
+  unsigned int gpio = gpio_rows[row];
+  int i, inactive_gpio;
+
+  // Set all gpio to 1, active row to 0
+  gpio_set_value(gpio, 0); 
+  for(i = 1; i < 4; i++){
+    inactive_gpio = gpio_rows[(row + i) % 4];
+    gpio_set_value(inactive_gpio, 1);
+  }
+
+  // increment row, ensure within bounds
+  work->gpio_row = (row + 1) % 4;
+
+  // We then queue the next row! Yes, this means infinite until the work_queue is flushed and destroyed.
+  queue_delayed_work(work->write_wq, (struct delayed_work*)work, GPIO_JIFFY_DELAY); 
+}
+
+static void planck_i2c_work_handler(struct work_struct *w)
 {
   int x, y, layer, layerOffset;
   uint16_t state, last_state;
@@ -191,7 +208,6 @@ static void planck_work_handler(struct work_struct *w)
 
   // cleanup
 finish:
-  //printk(KERN_DEBUG "planck: cleaning up work_handler");
   kfree((void*)w);
 }
 
@@ -202,16 +218,36 @@ static int planck_queue_i2c_work(struct planck_device *device)
     return -ENOMEM;
   }
 
-  INIT_WORK((struct work_struct*)work, planck_work_handler);
+  INIT_WORK((struct work_struct*)work, planck_i2c_work_handler);
   work->device = device;
 
   return queue_work(device->read_wq, (struct work_struct*)work);
 }
 
-// Setup GPIO output pins to force the i2c pin LOW so we don't have to actively poll and scanthe matrix
+static int planck_queue_gpio_work(struct planck_device *device)
+{
+  struct planck_gpio_work* work;
+  struct delayed_work* dw;
+
+  work = (struct planck_gpio_work*)kmalloc(sizeof(struct planck_gpio_work), GFP_KERNEL);
+  if(!work){
+    return -ENOMEM;
+  }
+  dw = (struct delayed_work*)work;
+
+  INIT_DELAYED_WORK(dw, planck_gpio_work_handler);
+  work->gpio_row = 0;
+  work->write_wq = device->write_wq;
+
+  return queue_delayed_work(device->write_wq, dw, GPIO_JIFFY_DELAY);
+}
+
+// Setup GPIO output pins to force the i2c pin LOW so we don't have to actively poll and scan the matrix
 static int planck_init_gpio_row(int gpio)
 {
   int res;
+  char gpio_name[10];
+
   printk("planck: configuring matrix GPIO rows...\n");
 
   res = gpio_is_valid(gpio);
@@ -219,8 +255,6 @@ static int planck_init_gpio_row(int gpio)
     printk(KERN_ERR "planck: invalid row GPIO pin %d\n", gpio);
     return -ENODEV;
   }
-
-  char gpio_name[10];
   snprintf(gpio_name, 10, "gpio_row_%d", gpio);
 
   gpio_request(gpio, gpio_name); 
@@ -242,10 +276,9 @@ static int planck_init_gpio(struct planck_device *device)
   }
 
   // Setup output row GPIO for forcing i2c row scan of columns
-  int rows[4] = { GPIO_ROW0, GPIO_ROW1, GPIO_ROW2, GPIO_ROW3 };
   int r;
   for(r = 0; r < 4; r++) {
-    res = planck_init_gpio_row(rows[r]);
+    res = planck_init_gpio_row(gpio_rows[r]);
     if(!res){
       goto free_rows;
     }
@@ -269,8 +302,8 @@ static int planck_init_gpio(struct planck_device *device)
 free_rows:
   while(r > 1){
     r--;
-    printk(KERN_ERR "planck: unable to initialise row GPIO output %d, freeing it.\n", rows[r]);
-    gpio_free(rows[r]);
+    printk(KERN_ERR "planck: unable to initialise row GPIO output, freeing previous row %d.\n", gpio_rows[r]);
+    gpio_free(gpio_rows[r]);
   }
   return -ENODEV;
 }
@@ -377,14 +410,10 @@ static int planck_i2c_probe(struct i2c_client *client, const struct i2c_device_i
   if(ret != 0) goto i2c_err;
 
   // Setup interrupt on change
+  // TODO: Probably want to only fire interrupt on column change, as rows will fire when we force it down with GPIO!
   ret = i2c_write_byte(client, MCP23017_GPINTENA, 0xff);
   if(ret != 0) goto i2c_err;
   ret = i2c_write_byte(client, MCP23017_GPINTENB, 0xff);
-  if(ret != 0) goto i2c_err;
-
-  ret = i2c_write_byte(client, MCP23017_GPIOA, 0x00);
-  if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_GPIOB, 0x00);
   if(ret != 0) goto i2c_err;
 
   printk(KERN_DEBUG "planck: i2c configured\n");
@@ -408,24 +437,34 @@ i2c_ok:
     goto free_input;
   }
   
-  device->read_wq = create_workqueue("planck_workqueue");
+  device->read_wq = create_workqueue("planck_i2c_workqueue");
   if(device->read_wq == NULL)
-    goto free_queue;
+    goto free_input;
+
+  device->write_wq = create_workqueue("planck_gpio_workqueue");
+  if(device->write_wq == NULL)
+    goto free_i2c_wq;
 
   ret = planck_init_gpio(device);
   if(ret != 0){
     printk(KERN_ERR "planck: unable to configure gpio, returned: %d\n", ret);
-    goto free_gpio;
+    goto free_gpio_wq;
   }
 
-  // Read the initial state
+  // Device setup complete, set the client's device data
   i2c_set_clientdata(client, device);
+  
+  // Read the initial state (Makes the MCP23017 happy)
   device->state = planck_read_i2c_state(device, MCP23017_INTCAPA);
+
+  // Queue the initial gpio row worker! (It queues itself after initial queue)
+  planck_queue_gpio_work(device);
 
   goto probe_ok;
 
-free_gpio:
-free_queue:
+free_gpio_wq:
+  destroy_workqueue(device->write_wq);
+free_i2c_wq:
   destroy_workqueue(device->read_wq);
 free_input:
   input_unregister_device(device->input);
@@ -445,10 +484,12 @@ static int planck_i2c_remove(struct i2c_client *client) {
   free_irq(dev->irq_number, dev);
   printk(KERN_DEBUG "planck: gpio_free");
   gpio_free(GPIO_INTERRUPT);
-  printk(KERN_DEBUG "planck: flush_workqueue");
+  printk(KERN_DEBUG "planck: flush and destroy read_wq");
   flush_workqueue(dev->read_wq);
-  printk(KERN_DEBUG "planck: destroy_workqueue");
   destroy_workqueue(dev->read_wq);
+  printk(KERN_DEBUG "planck: flushing delayed work and destroying write_wq");
+  flush_workqueue(dev->write_wq);
+  destroy_workqueue(dev->write_wq);
   printk(KERN_DEBUG "planck: input_unregister_device");
   input_unregister_device(dev->input);
   printk(KERN_DEBUG "planck: freeing device memory");
@@ -473,7 +514,6 @@ static int __init planck_init(void) {
   int res;
 
   printk(KERN_DEBUG "planck: initialising hid...");
-
   res = planck_init_hid();
   if (res != 0) {
     printk(KERN_DEBUG "planck: hid driver initialisation failed.\n");
