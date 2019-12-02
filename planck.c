@@ -7,8 +7,7 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
   ba <<= 8;
   ba |= a;
   
-  printk(KERN_DEBUG "planck: state is now: "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba>>8), BYTE_TO_BIN(ba));
-
+  //printk(KERN_DEBUG "planck: state is now: "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(ba>>8), BYTE_TO_BIN(ba));
   return ba;
 }
 
@@ -91,14 +90,8 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     planck_hid_report[2] = 0;
 
   printk(KERN_INFO "planck: trying to send usb hid report: %x, %x, %x, %x, %x, %x, %x, %x", 
-      planck_hid_report[0],
-      planck_hid_report[1],
-      planck_hid_report[2],
-      planck_hid_report[3],
-      planck_hid_report[4],
-      planck_hid_report[5],
-      planck_hid_report[6],
-      planck_hid_report[7]);
+      planck_hid_report[0],planck_hid_report[1],planck_hid_report[2],planck_hid_report[3],
+      planck_hid_report[4],planck_hid_report[5],planck_hid_report[6],planck_hid_report[7]);
 
   hidg0 = file_open("/dev/hidg0", O_RDWR | O_DSYNC, 570);
   if(!hidg0){
@@ -121,7 +114,7 @@ finished:
   mutex_lock(&hidg->lock);
 }
 
-static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
+static inline int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
 {
   // y = MAX_Y
   // lower: x == 5 (4 when 0 indexed)
@@ -129,36 +122,99 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
   // upper: x == 8 (7 when 0 indexed)
   int upper = (prev & (1 << MAX_Y)) && (prev & (1 << (MAX_Y + 7)));
 
-  //printk(KERN_DEBUG "planck: upper = %d, lower = %d", upper, lower); 
+  if(upper || lower)
+    printk(KERN_DEBUG "planck: upper = %d, lower = %d", upper, lower); 
+
   if(upper && lower)
     return 3;
   else if (upper)
     return 2;
   else if (lower)
     return 1;
-  
+
   return 0;
 }
 
-static void planck_gpio_work_handler(struct work_struct* w)
+static int planck_queue_row_work(struct planck_device* device, unsigned int active_row)
 {
-  struct planck_gpio_work *work = container_of(w, struct planck_gpio_work, work);
-  unsigned int row = work->gpio_row;
-  unsigned int gpio = gpio_rows[row];
-  int i, inactive_gpio;
+  int y;
+  struct planck_row_work* dw = (struct planck_row_work*)kmalloc(sizeof(struct planck_row_work), GFP_KERNEL);
+  INIT_DELAYED_WORK((struct delayed_work*)dw, planck_row_work_handler);
 
-  // Set all gpio to 1, active row to 0
-  gpio_set_value(gpio, 0); 
-  for(i = 1; i < 4; i++){
-    inactive_gpio = gpio_rows[(row + i) % 4];
-    gpio_set_value(inactive_gpio, 1);
+  dw->requeue = 1;
+  dw->active_row = active_row;
+  dw->device = device;
+
+  for(y = 0; y < MAX_Y; y++){
+    dw->last_state[y] = 0;
+    dw->last_state[y] |= (1 << (y + MAX_X));
   }
 
-  // increment row, ensure within bounds
-  work->gpio_row = (row + 1) % 4;
+  device->row_worker = dw;
 
-  // We then queue the next row! Yes, this means infinite until the work_queue is flushed and destroyed.
-  queue_delayed_work(work->write_wq, (struct delayed_work*)work, GPIO_JIFFY_DELAY); 
+  // Queue the initial work
+  return queue_delayed_work(device->write_wq, (struct delayed_work*)dw, GPIO_JIFFY_DELAY);
+}
+static inline int planck_row_state(uint16_t state, int row) {
+  int value = 0;
+
+  // Determine the last 4 columns state and the new row state
+  value |= (state >> 8);
+  // Set all rows HIGH
+  value |= (0xf << 4);
+  // Set active row LOW
+  value &= ~(1 << (4 + row)); 
+
+  return value;
+}
+
+static void planck_row_work_handler(struct delayed_work* w)
+{
+  uint16_t state, last_state;
+  int value, x, layer, layerOffset;
+  int last_row;
+  struct planck_row_work *work = container_of(w, struct planck_row_work, work);
+
+  if(!work->requeue){
+    printk(KERN_DEBUG "planck: cancelling work, requeue = %d\n", work->requeue);
+    return;
+  }
+
+  // TODO: This is a bodge because the interrupt only runs rising,
+  // Once the next row worker comes along, it never registers the release unless within its own row worker
+  // Check for key release outside of interrupt
+  last_row = (work->active_row - 1) % MAX_Y;
+  last_state = work->last_state[last_row];
+  state = ~planck_read_i2c_state(work->device, MCP23017_GPIOA); 
+
+  layer = planck_layer_handler(work->device, last_state, state);
+  layerOffset = layer * (MAX_X * MAX_Y);
+
+  //printk(KERN_DEBUG "planck: last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", work->active_row, BYTE_TO_BIN(last_state>>8), BYTE_TO_BIN(last_state));
+  for(x = 0; x < MAX_X; x++){
+    int lastX = (last_state & (1 << x));
+    int curX = (state & (1 << x));
+
+    if(lastX && !curX){
+      //printk(KERN_DEBUG "planck: release did not go through in interrupt, row cleaning it up...");
+      planck_process_input(work->device, layerOffset + (last_row * MAX_X) + x, layer, 0);
+
+      // Set the last_state so we don't release it again
+      work->last_state[last_row] &= ~(1 << x);
+    }
+  }
+
+  // Write i2c rows YYYY XXXX
+  value = planck_row_state(0xffff, work->active_row);
+  i2c_write_byte(work->device->i2c, MCP23017_GPIOB, value); 
+
+  //printk(KERN_DEBUG "planck: row state = "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(value));
+
+  // Increment the row for the next queue state
+  work->active_row = (work->active_row + 1) % MAX_Y;
+
+  // We then queue the next row! Yes, this means infinite until the worker state is requeue = 0.
+  queue_delayed_work(work->device->write_wq, w, GPIO_JIFFY_DELAY);
 }
 
 static void planck_i2c_work_handler(struct work_struct *w)
@@ -174,34 +230,48 @@ static void planck_i2c_work_handler(struct work_struct *w)
   }
 
   // Store the last state and read the new interrupt state
-  last_state = dev->state;
-  dev->state = ~planck_read_i2c_state(dev, MCP23017_INTCAPA);
-  state = dev->state;
+  state = ~planck_read_i2c_state(dev, MCP23017_INTCAPA);
 
-  // Nothing changed
-  if(state == last_state || ~last_state == 0)
-    goto finish;
-
+  // Layer buttons are on row 4 (PB7)
+  last_state = dev->row_worker->last_state[3];
   layer = planck_layer_handler(dev, last_state, state);
   layerOffset = layer * (MAX_X * MAX_Y);
-  for(y = 0; y < MAX_Y; y++) {
-    int currY = (state & (1 << (y + MAX_X)));
-    int lastY = (last_state & (1 << (y + MAX_X)));
 
-    for(x = 0; x < MAX_X; x++) {
-      int currX = (state & (1 << x));
-      int lastX = (last_state & (1 << x));
-
-      // Currently pressed, was not pressed before (Pressed)
-      if(!!currX && !!currY && (!lastY || !lastX)){
-        planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 1);
-      } 
-      // No longer pressed, pressed before (Released)
-      else if((!currX || !currY) && (!!lastY && !!lastX)){
-        planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 0);
-      }
+  y = -1;
+  for(x = 0; x < MAX_Y; x++){
+    if(state & (1 << (x + MAX_X))){
+      y = x;
+      break;
     }
   }
+  if(y < 0)
+    goto requeue;
+
+  last_state = dev->row_worker->last_state[y];
+  //printk(KERN_DEBUG "planck: last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", y, BYTE_TO_BIN(last_state>>8), BYTE_TO_BIN(last_state));
+
+  for(x = 0; x < MAX_X; x++) {
+    int currX = (state & (1 << x));
+    int lastX = (last_state & (1 << x));
+
+    // Currently pressed, was not pressed before (Pressed)
+    if(currX && !lastX){
+      planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 1);
+    } 
+    // No longer pressed, pressed before (Released)
+    else if (!currX && lastX){
+      planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 0);
+    }
+  }
+
+  // active row when currY == 1, we save our current state to the workers last_state
+  dev->row_worker->last_state[y] = state;
+  //printk(KERN_DEBUG "planck: saving last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", y, BYTE_TO_BIN(state>>8), BYTE_TO_BIN(state));
+requeue:
+  dev->row_worker->requeue = 1;
+  
+  queue_delayed_work(dev->write_wq, (struct delayed_work*)dev->row_worker, GPIO_JIFFY_DELAY);
+
   if(dev->internal){
     input_sync(dev->input);
   }
@@ -213,7 +283,13 @@ finish:
 
 static int planck_queue_i2c_work(struct planck_device *device)
 {
-  struct planck_i2c_work* work = (struct planck_i2c_work*)kmalloc(sizeof(struct planck_i2c_work), GFP_KERNEL);
+  struct planck_i2c_work* work;
+
+  // Deactivate all row workers, as we need a solid state until the i2c_work_handler is complete
+  if(device->row_worker != NULL){
+    device->row_worker->requeue = 0;
+  }
+  work  = (struct planck_i2c_work*)kmalloc(sizeof(struct planck_i2c_work), GFP_KERNEL);
   if(!work){
     return -ENOMEM;
   }
@@ -221,46 +297,7 @@ static int planck_queue_i2c_work(struct planck_device *device)
   INIT_WORK((struct work_struct*)work, planck_i2c_work_handler);
   work->device = device;
 
-  return queue_work(device->read_wq, (struct work_struct*)work);
-}
-
-static int planck_queue_gpio_work(struct planck_device *device)
-{
-  struct planck_gpio_work* work;
-  struct delayed_work* dw;
-
-  work = (struct planck_gpio_work*)kmalloc(sizeof(struct planck_gpio_work), GFP_KERNEL);
-  if(!work){
-    return -ENOMEM;
-  }
-  dw = (struct delayed_work*)work;
-
-  INIT_DELAYED_WORK(dw, planck_gpio_work_handler);
-  work->gpio_row = 0;
-  work->write_wq = device->write_wq;
-
-  return queue_delayed_work(device->write_wq, dw, GPIO_JIFFY_DELAY);
-}
-
-// Setup GPIO output pins to force the i2c pin LOW so we don't have to actively poll and scan the matrix
-static int planck_init_gpio_row(int gpio)
-{
-  int res;
-  char gpio_name[10];
-
-  printk("planck: configuring matrix GPIO rows...\n");
-
-  res = gpio_is_valid(gpio);
-  if(!res){
-    printk(KERN_ERR "planck: invalid row GPIO pin %d\n", gpio);
-    return -ENODEV;
-  }
-  snprintf(gpio_name, 10, "gpio_row_%d", gpio);
-
-  gpio_request(gpio, gpio_name); 
-  gpio_direction_output(gpio, 1);
-  
-  return 0;
+  return queue_work(work->device->read_wq, (struct work_struct*)work);
 }
 
 static int planck_init_gpio(struct planck_device *device)
@@ -273,15 +310,6 @@ static int planck_init_gpio(struct planck_device *device)
   {
     printk(KERN_ERR "planck: invalid interrupt GPIO pin %d\n", GPIO_INTERRUPT);
     return -ENODEV;
-  }
-
-  // Setup output row GPIO for forcing i2c row scan of columns
-  int r;
-  for(r = 0; r < 4; r++) {
-    res = planck_init_gpio_row(gpio_rows[r]);
-    if(!res){
-      goto free_rows;
-    }
   }
 
   // Setup input GPIO for interrupt when i2c state changes
@@ -298,14 +326,6 @@ static int planck_init_gpio(struct planck_device *device)
   printk(KERN_DEBUG "planck: the interrupt request result is %d\n", res);
   
   return 0;
-
-free_rows:
-  while(r > 1){
-    r--;
-    printk(KERN_ERR "planck: unable to initialise row GPIO output, freeing previous row %d.\n", gpio_rows[r]);
-    gpio_free(gpio_rows[r]);
-  }
-  return -ENODEV;
 }
 
 static int planck_init_hid(void)
@@ -346,7 +366,8 @@ static int planck_init_internal_input(struct planck_device* device)
   input = input_allocate_device();
   if(input == NULL)
     return -ENOMEM;
-  
+ 
+  input->name = "planck-internal-kbd";
   input->evbit[0] = BIT_MASK(EV_KEY);
   input->keycode = planck_keycodes;
   input->keycodesize = sizeof(unsigned short); 
@@ -391,16 +412,16 @@ static int planck_i2c_probe(struct i2c_client *client, const struct i2c_device_i
   }
   printk(KERN_DEBUG "planck: configuring i2c");
 
-  // Setup all inputs
+  // Setup all columns to inputs
   ret = i2c_write_byte(client, MCP23017_IODIRA, 0xff);
   if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_IODIRB, 0xff);
+  ret = i2c_write_byte(client, MCP23017_IODIRB, 0x0f);
   if(ret != 0) goto i2c_err;
 
   // Setup pullups
   ret = i2c_write_byte(client, MCP23017_GPPUA, 0xff);
   if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_GPPUB, 0xff);
+  ret = i2c_write_byte(client, MCP23017_GPPUB, 0x0f);
   if(ret != 0) goto i2c_err;
  
   // Setup interrupt mirrorring disable SEQOP, polarity HIGH 
@@ -410,10 +431,16 @@ static int planck_i2c_probe(struct i2c_client *client, const struct i2c_device_i
   if(ret != 0) goto i2c_err;
 
   // Setup interrupt on change
-  // TODO: Probably want to only fire interrupt on column change, as rows will fire when we force it down with GPIO!
   ret = i2c_write_byte(client, MCP23017_GPINTENA, 0xff);
   if(ret != 0) goto i2c_err;
-  ret = i2c_write_byte(client, MCP23017_GPINTENB, 0xff);
+  // Only fire interrupt for columns, not rows
+  ret = i2c_write_byte(client, MCP23017_GPINTENB, 0x0f);
+  if(ret != 0) goto i2c_err;
+
+  // Set initial GPIO state
+  ret = i2c_write_byte(client, MCP23017_GPIOA, 0xff);
+  if(ret != 0) goto i2c_err;
+  ret = i2c_write_byte(client, MCP23017_GPIOB, 0xff);
   if(ret != 0) goto i2c_err;
 
   printk(KERN_DEBUG "planck: i2c configured\n");
@@ -441,7 +468,7 @@ i2c_ok:
   if(device->read_wq == NULL)
     goto free_input;
 
-  device->write_wq = create_workqueue("planck_gpio_workqueue");
+  device->write_wq = create_singlethread_workqueue("planck_row_workqueue");
   if(device->write_wq == NULL)
     goto free_i2c_wq;
 
@@ -455,10 +482,10 @@ i2c_ok:
   i2c_set_clientdata(client, device);
   
   // Read the initial state (Makes the MCP23017 happy)
-  device->state = planck_read_i2c_state(device, MCP23017_INTCAPA);
-
-  // Queue the initial gpio row worker! (It queues itself after initial queue)
-  planck_queue_gpio_work(device);
+  planck_read_i2c_state(device, MCP23017_INTCAPA);
+  
+  // Queue the initial row workers! (They maintain their own lifecycle / queue themselves after initial queue)
+  planck_queue_row_work(device, 0);
 
   goto probe_ok;
 
@@ -488,6 +515,7 @@ static int planck_i2c_remove(struct i2c_client *client) {
   flush_workqueue(dev->read_wq);
   destroy_workqueue(dev->read_wq);
   printk(KERN_DEBUG "planck: flushing delayed work and destroying write_wq");
+  cancel_delayed_work((struct delayed_work*)dev->row_worker);
   flush_workqueue(dev->write_wq);
   destroy_workqueue(dev->write_wq);
   printk(KERN_DEBUG "planck: input_unregister_device");
@@ -543,22 +571,18 @@ static void __exit planck_exit(void)
   printk(KERN_DEBUG "planck: deleting i2c driver...");
   i2c_del_driver(&planck_i2c_driver);
 
-
   printk("planck: exited");
 }
 
 static irq_handler_t planck_gpio_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs)
 {  
   struct planck_device *device = dev_id;
-  unsigned long flags;
   int ret;
 
   if(device == NULL)
     return (irq_handler_t)IRQ_HANDLED;
 
-  spin_lock_irqsave(&device->irq_lock, flags);
   ret = planck_queue_i2c_work(device);
-  spin_unlock_irqrestore(&device->irq_lock, flags);
 
   return (irq_handler_t)IRQ_HANDLED;
 }

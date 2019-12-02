@@ -217,7 +217,8 @@ static int planck_hid_plat_driver_remove(struct platform_device *pdev){
 static void planck_platform_device_release(struct device *dev){
   printk(KERN_DEBUG "planck: planck_platform_device_release\n");
 
-  struct platform_object *pa = container_of(dev, struct platform_object, pdev.dev);
+  struct platform_object *pa;
+  pa = container_of(dev, struct platform_object, pdev.dev);
 
   printk(KERN_DEBUG "1");
   of_device_node_put(&pa->pdev.dev);

@@ -16,8 +16,8 @@
 
     __overlay__ {
       planck_pins: planck_pins {
-        rockchip,pins = <32>;
-        rockchip,function = <0>;
+        rockchip,pins = <32 33 35 36 128>;
+        rockchip,function = <0 1 1 1 1>;
       };
     };
   };
