@@ -11,13 +11,16 @@ static uint16_t planck_read_i2c_state(struct planck_device *device, int reg)
   return ba;
 }
 
-static void planck_process_input(struct planck_device *dev, unsigned short coord, int layer, int pressed)
+static void planck_process_input(struct planck_device *dev, int x, int y, int layer, int pressed)
 {
   struct hidg_func_node* hfn;
   struct f_hidg* hidg;
   struct file* hidg0;
   unsigned short keycode;
+  unsigned short coord;
   int status;
+
+  coord = (layer * (MAX_X * MAX_Y)) + (y * MAX_X) + x;
 
   printk(KERN_INFO "planck: planck_process_input invoked, coord: %d, layer: %d, pressed: %d\n", coord, layer, pressed);
 
@@ -25,7 +28,7 @@ static void planck_process_input(struct planck_device *dev, unsigned short coord
     return;
 
   // Switch input modes from internal to external USB mode
-  if(layer == 3 && coord == KEY_CONNECT && pressed == 0)
+  if(layer == 3 && planck_keycodes[coord] == KEY_CONNECT && pressed == 0)
   {
     if(dev->internal)
       printk(KERN_DEBUG "planck: switching input mode to usb hid mode!");
@@ -171,8 +174,7 @@ static inline int planck_row_state(uint16_t state, int row) {
 static void planck_row_work_handler(struct delayed_work* w)
 {
   uint16_t state, last_state;
-  int value, x, layer, layerOffset;
-  int last_row;
+  int value, x, y, layer;
   struct planck_row_work *work = container_of(w, struct planck_row_work, work);
 
   if(!work->requeue){
@@ -180,35 +182,33 @@ static void planck_row_work_handler(struct delayed_work* w)
     return;
   }
 
-  // TODO: This is a bodge because the interrupt only runs rising,
-  // Once the next row worker comes along, it never registers the release unless within its own row worker
-  // Check for key release outside of interrupt
-  last_row = (work->active_row - 1) % MAX_Y;
-  last_state = work->last_state[last_row];
-  state = ~planck_read_i2c_state(work->device, MCP23017_GPIOA); 
+  // Doing the lazy method to get it working!
+  for(y = 0; y < MAX_Y; y++){
+    // Write i2c rows YYYY XXXX
+    last_state = work->last_state[y];
+    printk(KERN_DEBUG "planck: last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", work->active_row, BYTE_TO_BIN(last_state>>8), BYTE_TO_BIN(last_state));
 
-  layer = planck_layer_handler(work->device, last_state, state);
-  layerOffset = layer * (MAX_X * MAX_Y);
+    value = planck_row_state(0xffff, y);
+    i2c_write_byte(work->device->i2c, MCP23017_GPIOB, value); 
 
-  //printk(KERN_DEBUG "planck: last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", work->active_row, BYTE_TO_BIN(last_state>>8), BYTE_TO_BIN(last_state));
-  for(x = 0; x < MAX_X; x++){
-    int lastX = (last_state & (1 << x));
-    int curX = (state & (1 << x));
+    // Check the new state now that the row is active
+    state = ~planck_read_i2c_state(work->device, MCP23017_GPIOA); 
+    layer = planck_layer_handler(work->device, last_state, state);
 
-    if(lastX && !curX){
-      //printk(KERN_DEBUG "planck: release did not go through in interrupt, row cleaning it up...");
-      planck_process_input(work->device, layerOffset + (last_row * MAX_X) + x, layer, 0);
+    for(x = 0; x < MAX_X; x++){
+      int lastX = (last_state & (1 << x));
+      int curX = (state & (1 << x));
 
-      // Set the last_state so we don't release it again
-      work->last_state[last_row] &= ~(1 << x);
+      if(lastX && !curX){
+        planck_process_input(work->device, x, y, layer, 0);
+        work->last_state[y] &= ~(1 << x);
+      }
+      if(curX && !lastX){
+        planck_process_input(work->device, x, y, layer, 1);
+        work->last_state[y] |= (1 << x);
+      }
     }
   }
-
-  // Write i2c rows YYYY XXXX
-  value = planck_row_state(0xffff, work->active_row);
-  i2c_write_byte(work->device->i2c, MCP23017_GPIOB, value); 
-
-  //printk(KERN_DEBUG "planck: row state = "BYTE_TO_BIN_PAT"\n", BYTE_TO_BIN(value));
 
   // Increment the row for the next queue state
   work->active_row = (work->active_row + 1) % MAX_Y;
@@ -250,19 +250,19 @@ static void planck_i2c_work_handler(struct work_struct *w)
   last_state = dev->row_worker->last_state[y];
   //printk(KERN_DEBUG "planck: last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", y, BYTE_TO_BIN(last_state>>8), BYTE_TO_BIN(last_state));
 
-  for(x = 0; x < MAX_X; x++) {
-    int currX = (state & (1 << x));
-    int lastX = (last_state & (1 << x));
-
-    // Currently pressed, was not pressed before (Pressed)
-    if(currX && !lastX){
-      planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 1);
-    } 
-    // No longer pressed, pressed before (Released)
-    else if (!currX && lastX){
-      planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 0);
-    }
-  }
+// for(x = 0; x < MAX_X; x++) {
+//   int currX = (state & (1 << x));
+//   int lastX = (last_state & (1 << x));
+//
+//   // Currently pressed, was not pressed before (Pressed)
+//   if(currX && !lastX){
+//     planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 1);
+//   } 
+//   // No longer pressed, pressed before (Released)
+//   else if (!currX && lastX){
+//     planck_process_input(dev, layerOffset + (y * MAX_X) + x, layer, 0);
+//   }
+// }
 
   // active row when currY == 1, we save our current state to the workers last_state
   dev->row_worker->last_state[y] = state;
@@ -431,10 +431,10 @@ static int planck_i2c_probe(struct i2c_client *client, const struct i2c_device_i
   if(ret != 0) goto i2c_err;
 
   // Setup interrupt on change
-  ret = i2c_write_byte(client, MCP23017_GPINTENA, 0xff);
+  ret = i2c_write_byte(client, MCP23017_GPINTENA, 0x00); //0xff);
   if(ret != 0) goto i2c_err;
   // Only fire interrupt for columns, not rows
-  ret = i2c_write_byte(client, MCP23017_GPINTENB, 0x0f);
+  ret = i2c_write_byte(client, MCP23017_GPINTENB, 0x00); //0x0f);
   if(ret != 0) goto i2c_err;
 
   // Set initial GPIO state

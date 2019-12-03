@@ -15,7 +15,7 @@
 #define DEVICE_NAME       "planck"
 #define GPIO_DEBOUNCE     50
 #define GPIO_INTERRUPT    32
-#define GPIO_JIFFY_DELAY  50
+#define GPIO_JIFFY_DELAY  300
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");
