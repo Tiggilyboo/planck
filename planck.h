@@ -12,10 +12,9 @@
 #include "planck_vfs.h"
 #include "f_hid.h"
 
-#define DEVICE_NAME       "planck"
-#define GPIO_DEBOUNCE     50
-#define GPIO_INTERRUPT    32
-#define GPIO_JIFFY_DELAY  300
+#define DEVICE_NAME           "planck"
+#define GPIO_JIFFY_DELAY      3
+#define PLANCK_BOOT_INTERNAL  1
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simon Willshire");
@@ -27,13 +26,8 @@ MODULE_SOFTDEP("pre: usb_f_hid");
 
 struct planck_device {
   struct i2c_client *i2c;
-  spinlock_t irq_lock;
-  unsigned int irq_number;
-
-  struct workqueue_struct* read_wq;
   struct workqueue_struct* write_wq;
   struct planck_row_work* row_worker;
-
   bool internal;
   struct input_dev *input;
 };
@@ -45,15 +39,11 @@ struct planck_i2c_work {
 struct planck_row_work {
   struct delayed_work work;
   struct planck_device *device;
-  unsigned int active_row;
   uint16_t last_state[MAX_Y];
-  bool requeue;
 };
 
 static struct of_device_id planck_ids[] = {{.compatible = DEVICE_NAME},{}};
 static const struct i2c_device_id planck_id[] = { {DEVICE_NAME, 0}, {}};
-static irq_handler_t planck_gpio_interrupt(unsigned int irq, void *dev_id, struct pt_regs *regs);
-static void planck_i2c_work_handler(struct work_struct *w);
 static void planck_row_work_handler(struct delayed_work *w);
 
 MODULE_DEVICE_TABLE(i2c, planck_id);
