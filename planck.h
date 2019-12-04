@@ -40,6 +40,7 @@ struct planck_row_work {
   struct delayed_work work;
   struct planck_device *device;
   uint16_t last_state[MAX_Y];
+  unsigned int layer;
 };
 
 static struct of_device_id planck_ids[] = {{.compatible = DEVICE_NAME},{}};

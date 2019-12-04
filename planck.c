@@ -27,7 +27,7 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
     return;
 
   // Switch input modes from internal to external USB mode
-  if(layer == 3 && coord == 0 && pressed == 1)
+  if(layer == 3 && planck_keycodes[coord] == KEY_CONNECT && pressed == 0)
   {
     if(dev->internal)
       printk(KERN_DEBUG "planck: switching input mode to usb hid mode!");
@@ -122,11 +122,9 @@ static inline int planck_layer_handler(struct planck_device* dev, uint16_t prev,
 {
   // y = MAX_Y
   // lower: x == 5 (4 when 0 indexed)
-  int lower = (prev & (1 << (3 + MAX_X))) 
-    && (prev & (1 << 4));
+  int lower = (prev & (1 << (3 + MAX_X))) && (prev & (1 << 4));
   // upper: x == 8 (7 when 0 indexed)
-  int upper = (prev & (1 << (3 + MAX_X)))
-    && (prev & (1 << 7));
+  int upper = (prev & (1 << (3 + MAX_X))) && (prev & (1 << 7));
 
   if(upper && lower)
     return 3;
@@ -144,6 +142,7 @@ static int planck_queue_row_work(struct planck_device* device)
   struct planck_row_work* dw = (struct planck_row_work*)kmalloc(sizeof(struct planck_row_work), GFP_KERNEL);
   INIT_DELAYED_WORK((struct delayed_work*)dw, planck_row_work_handler);
 
+  dw->layer = 0;
   dw->device = device;
   for(y = 0; y < MAX_Y; y++){
     dw->last_state[y] = 0;
@@ -174,18 +173,25 @@ static void planck_row_work_handler(struct delayed_work* w)
   int value, x, y, layer;
   struct planck_row_work *work = container_of(w, struct planck_row_work, work);
 
-  // Doing the lazy method to get it working!
+  layer = work->layer;
+
   for(y = 0; y < MAX_Y; y++){
     // Write i2c rows YYYY XXXX
     last_state = work->last_state[y];
-    //printk(KERN_DEBUG "planck: last_state[%d] = "BYTE_TO_BIN_PAT" "BYTE_TO_BIN_PAT"\n", work->active_row, BYTE_TO_BIN(last_state>>8), BYTE_TO_BIN(last_state));
 
+    // Get our intended row aka y state to write to i2c
     value = planck_row_state(0xffff, y);
     i2c_write_byte(work->device->i2c, MCP23017_GPIOB, value); 
 
     // Check the new state now that the row is active
     state = ~planck_read_i2c_state(work->device, MCP23017_GPIOA); 
-    layer = planck_layer_handler(work->device, last_state, state);
+
+    // Only set the layer where y == 3, as both layer buttons reside there
+    // Otherwise, use the stored layer state in the worker
+    if(y == 3){
+      layer = planck_layer_handler(work->device, last_state, state);
+      work->layer = layer;
+    }
 
     for(x = 0; x < MAX_X; x++){
       int lastX = (last_state & (1 << x));
@@ -193,16 +199,16 @@ static void planck_row_work_handler(struct delayed_work* w)
 
       if(lastX && !curX){
         planck_process_input(work->device, x, y, layer, 0);
-        work->last_state[y] &= ~(1 << x);
+        work->last_state[y] = state; 
       }
       if(curX && !lastX){
         planck_process_input(work->device, x, y, layer, 1);
-        work->last_state[y] |= (1 << x);
+        work->last_state[y] = state; 
       }
     }
   }
 
-  // We then queue the next row! Yes, this means infinite until the worker state is requeue = 0.
+  // We then queue the next row! Yes, this means forever.
   queue_delayed_work(work->device->write_wq, w, GPIO_JIFFY_DELAY);
 }
 
