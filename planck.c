@@ -19,10 +19,10 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
   unsigned short coord;
   int status;
 
-  coord = (layer * (MAX_X * MAX_Y)) + (y * MAX_X) + x;
-
   if(!dev) 
     return;
+
+  coord = (layer * (MAX_X * MAX_Y)) + (y * MAX_X) + x;
 
   // Switch input modes from internal to external USB mode
   if(layer == 3 && planck_keycodes[coord] == KEY_CONNECT && pressed == 0)
@@ -67,7 +67,7 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
   // Assemble HID request
   keycode = planck_hid_keymap[coord];
 
-  // All modifiers are 0xE[0-7]
+  // Handle all modifiers are 0xE[0-7]
   if(keycode >= 0xE0 && keycode <= 0xE7)
   {
     if(pressed)
@@ -76,6 +76,13 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
       planck_hid_report[0] &= ~(1 << (keycode - 0xE0));
 
     goto finished;
+  }
+  // Are we in lower?
+  if(layer == 1){
+    if(pressed)
+      planck_hid_report[0] |= 0x02;
+    else
+      planck_hid_report[0] &= ~0x02;
   }
 
   // Add any new keycode in the report
@@ -109,22 +116,44 @@ finished:
   mutex_lock(&hidg->lock);
 }
 
-static inline int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
+static void planck_layer_internal_modifiers(struct planck_device* dev, uint16_t curr, int layer)
 {
-  // y = MAX_Y
-  // lower: x == 5 (4 when 0 indexed)
+  // HID handled directly in HID input processing
+  if(!dev->internal)
+    return;
+  
+  int clower = (curr & (1 << (3 + MAX_X))) && (curr & (1 << 4));
+  int cupper = (curr & (1 << (3 + MAX_X))) && (curr & (1 << 7));
+
+  if(clower){
+    if(layer != 1) {
+      // ie. last lower == false
+      printk(KERN_DEBUG "planck: input_event for keycode %d in state: %d.\n", KEY_LEFTSHIFT, 1);
+      input_event(dev->input, EV_KEY, KEY_LEFTSHIFT, 1);
+    }
+  } else if(!cupper && layer == 1) {
+    // ie. last lower == true, curr lower == false
+    printk(KERN_DEBUG "planck: input_event for keycode %d in state: %d.\n", KEY_LEFTSHIFT, 0);
+    input_event(dev->input, EV_KEY, KEY_LEFTSHIFT, 0);
+  }
+}
+
+static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16_t curr)
+{
+  int layer = 0;
   int lower = (prev & (1 << (3 + MAX_X))) && (prev & (1 << 4));
-  // upper: x == 8 (7 when 0 indexed)
   int upper = (prev & (1 << (3 + MAX_X))) && (prev & (1 << 7));
 
   if(upper && lower)
-    return 3;
+    layer = 3; 
   else if (upper)
-    return 2;
+    layer = 2;
   else if (lower)
-    return 1;
+    layer = 1;
 
-  return 0;
+  planck_layer_internal_modifiers(dev, curr, layer);
+
+  return layer;
 }
 
 static int planck_queue_row_work(struct planck_device* device)
@@ -198,6 +227,9 @@ static void planck_row_work_handler(struct delayed_work* w)
       }
     }
   }
+  // Make sure to sync the internal report!
+  if(work->device->internal)
+    input_sync(work->device->input);
 
   // We then queue the next row! Yes, this means forever.
   queue_delayed_work(work->device->write_wq, w, GPIO_JIFFY_DELAY);
