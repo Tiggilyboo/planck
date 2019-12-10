@@ -10,3 +10,5 @@ debug:
 	EXTRA_FLAGS="${PLANCK_FLAGS}"
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+install:
+	sudo cp planck.ko /lib/modules/$(shell uname -r)/kernel/planck/planck.ko

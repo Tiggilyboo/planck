@@ -21,8 +21,6 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
 
   coord = (layer * (MAX_X * MAX_Y)) + (y * MAX_X) + x;
 
-  printk(KERN_INFO "planck: planck_process_input invoked, coord: %d, layer: %d, pressed: %d\n", coord, layer, pressed);
-
   if(!dev) 
     return;
 
@@ -69,17 +67,13 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
   // Assemble HID request
   keycode = planck_hid_keymap[coord];
 
-  // Accumulate modifiers
-  if(keycode == 0x01 || keycode == 0x10 
-      || keycode == 0x02 || keycode == 0x20 
-      || keycode == 0x04 || keycode == 0x40 
-      || keycode == 0x08 || keycode == 0x80){
-    
-    if(!(planck_hid_report[0] & keycode)) {
-      planck_hid_report[0] =| keycode;
-    } else if(!pressed) {
-      planck_hid_report[0] &= ~keycode;
-    }
+  // All modifiers are 0xE[0-7]
+  if(keycode >= 0xE0 && keycode <= 0xE7)
+  {
+    if(pressed)
+      planck_hid_report[0] |= (1 << (keycode - 0xE0));
+    else
+      planck_hid_report[0] &= ~(1 << (keycode - 0xE0));
 
     goto finished;
   }
@@ -110,8 +104,8 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
     goto finished;
   }
 
-  printk(KERN_DEBUG "planck: wrote planck_hid_report to /dev/hidg0\n");
 finished:
+  printk(KERN_DEBUG "planck: hid report for keycode %d in state: %d.\n", keycode, pressed);
   mutex_lock(&hidg->lock);
 }
 
