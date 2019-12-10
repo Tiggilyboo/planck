@@ -76,15 +76,12 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
       || keycode == 0x08 || keycode == 0x80){
     
     if(!(planck_hid_report[0] & keycode)) {
-      planck_hid_report[0] = planck_hid_report[0] | keycode;
+      planck_hid_report[0] =| keycode;
+    } else if(!pressed) {
+      planck_hid_report[0] &= ~keycode;
     }
 
-    // Don't send the mods yet, only with other inputs values!
-    printk(KERN_DEBUG "planck: not sending modifier, no other key pressed yet...");
     goto finished;
-  } else {
-    // Clear the modifier
-    planck_hid_report[0] = 0;
   }
 
   // Add any new keycode in the report
@@ -431,6 +428,8 @@ static void __exit planck_exit(void)
   platform_driver_unregister(&hidg_plat_driver);
   printk(KERN_DEBUG "planck: unregistering usb composite driver");
   usb_composite_unregister(&planck_hidg_driver);
+  printk(KERN_DEBUG "planck: unregistering platform device planck_hid");
+  platform_device_unregister(&planck_hid);
 
   printk(KERN_DEBUG "planck: deleting i2c driver...");
   i2c_del_driver(&planck_i2c_driver);
