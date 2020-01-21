@@ -33,6 +33,9 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
       printk(KERN_DEBUG "planck: switching input mode to internal mode!");
 
     dev->internal = !dev->internal;
+
+    // Reset modifiers when switching modes
+    planck_hid_report[0] = 0x00;
     return;
   }
 
@@ -74,10 +77,8 @@ static void planck_process_input(struct planck_device *dev, int x, int y, int la
       planck_hid_report[0] |= (1 << (keycode - 0xE0));
     else
       planck_hid_report[0] &= ~(1 << (keycode - 0xE0));
-
-    goto finished;
   }
-  // Are we in lower?
+  // Are we in lower? (Hold shift)
   if(layer == 1){
     if(pressed)
       planck_hid_report[0] |= 0x02;
