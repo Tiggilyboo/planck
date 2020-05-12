@@ -1,5 +1,7 @@
 # Planck Linux i2c keyboard driver
 
+![Planck](https://i.imgur.com/9hlVvh2.jpg)
+
 A Linux GPIO i2c keyboard driver for the Planck which provides two modes of operation; an internal input device and external via USB HID output.
 
 Currently the i2c is hardcoded for the MCP23017 GPIO multiplexer, it uses registers only for this board, and interrupt patterns just for this board.
