@@ -160,19 +160,19 @@ static int planck_layer_handler(struct planck_device* dev, uint16_t prev, uint16
 static int planck_queue_row_work(struct planck_device* device)
 {
   int y;
-  struct planck_row_work* dw = (struct planck_row_work*)kmalloc(sizeof(struct planck_row_work), GFP_KERNEL);
-  INIT_DELAYED_WORK((struct delayed_work*)dw, planck_row_work_handler);
+  struct planck_row_work* rw = (struct planck_row_work*)kmalloc(sizeof(struct planck_row_work), GFP_KERNEL);
+  INIT_DELAYED_WORK((struct delayed_work*)rw, planck_row_work_handler);
 
-  dw->layer = 0;
-  dw->device = device;
+  rw->layer = 0;
+  rw->device = device;
   for(y = 0; y < MAX_Y; y++){
-    dw->last_state[y] = 0;
-    dw->last_state[y] |= (1 << (y + MAX_X));
+    rw->last_state[y] = 0;
+    rw->last_state[y] |= (1 << (y + MAX_X));
   }
-  device->row_worker = dw;
+  device->row_worker = rw;
 
   // Queue the initial work
-  return queue_delayed_work(device->write_wq, (struct delayed_work*)dw, GPIO_JIFFY_DELAY);
+  return queue_delayed_work(device->write_wq, &rw->work, GPIO_JIFFY_DELAY);
 }
 
 static inline int planck_row_state(uint16_t state, int row) {
@@ -188,11 +188,12 @@ static inline int planck_row_state(uint16_t state, int row) {
   return value;
 }
 
-static void planck_row_work_handler(struct delayed_work* w)
+static void planck_row_work_handler(struct work_struct* w)
 {
   uint16_t state, last_state;
   int value, x, y, layer;
-  struct planck_row_work *work = container_of(w, struct planck_row_work, work);
+  struct delayed_work *dw = (struct delayed_work*)w;
+  struct planck_row_work *work = container_of(dw, struct planck_row_work, work);
 
   layer = work->layer;
 
@@ -233,7 +234,7 @@ static void planck_row_work_handler(struct delayed_work* w)
     input_sync(work->device->input);
 
   // We then queue the next row! Yes, this means forever.
-  queue_delayed_work(work->device->write_wq, w, GPIO_JIFFY_DELAY);
+  queue_delayed_work(work->device->write_wq, (struct delayed_work*)w, GPIO_JIFFY_DELAY);
 }
 
 static int planck_init_hid(void)

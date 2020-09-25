@@ -11,4 +11,6 @@ debug:
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 install:
+	sudo mkdir -p /lib/modules$(shell uname -r)/kernel/planck
 	sudo cp planck.ko /lib/modules/$(shell uname -r)/kernel/planck/planck.ko
+	sudo depmod -a

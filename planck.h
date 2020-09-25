@@ -45,6 +45,6 @@ struct planck_row_work {
 
 static struct of_device_id planck_ids[] = {{.compatible = DEVICE_NAME},{}};
 static const struct i2c_device_id planck_id[] = { {DEVICE_NAME, 0}, {}};
-static void planck_row_work_handler(struct delayed_work *w);
+static void planck_row_work_handler(struct work_struct *w);
 
 MODULE_DEVICE_TABLE(i2c, planck_id);
