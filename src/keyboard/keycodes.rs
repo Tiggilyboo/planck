@@ -1,5 +1,6 @@
 // Stolen from https://github.com/HaoboGu/rmk
 
+use core::usize;
 use bitfield_struct::bitfield;
 use num_enum::FromPrimitive;
 
@@ -24,20 +25,6 @@ pub struct ModifierCombination {
     pub(crate) right: bool,
     #[bits(3)]
     _reserved: u8,
-}
-
-impl Format for ModifierCombination {
-    fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(
-            fmt,
-            "ModifierCombination {{ ctrl: {=bool}, shift: {=bool}, alt: {=bool}, gui: {=bool}, right: {=bool} }}",
-            self.ctrl(),
-            self.shift(),
-            self.alt(),
-            self.gui(),
-            self.right()
-        )
-    }
 }
 
 impl ModifierCombination {
@@ -109,7 +96,7 @@ impl ModifierCombination {
 /// Keys in consumer page
 /// Ref: <https://www.usb.org/sites/default/files/documents/hut1_12v2.pdf#page=75>
 #[non_exhaustive]
-#[derive(Debug, Format, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromPrimitive)]
 #[repr(u16)]
 pub enum ConsumerKey {
     #[num_enum(default)]
@@ -176,7 +163,7 @@ pub enum ConsumerKey {
 /// Keys in `Generic Desktop Page`, generally used for system control
 /// Ref: <https://www.usb.org/sites/default/files/documents/hut1_12v2.pdf#page=26>
 #[non_exhaustive]
-#[derive(Debug, Format, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromPrimitive)]
 #[repr(u16)]
 pub enum SystemControlKey {
     #[num_enum(default)]
@@ -189,7 +176,7 @@ pub enum SystemControlKey {
 
 /// KeyCode is the internal representation of all keycodes, keyboard operations, etc.
 /// Use flat representation of keycodes.
-#[derive(Debug, Format, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, FromPrimitive)]
 #[repr(u16)]
 pub enum KeyCode {
     /// Reserved, no-key.

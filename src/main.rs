@@ -97,9 +97,6 @@ async fn main(spawner: Spawner) {
     let mut usb = builder.build();
     let usb_fut = usb.run();
 
-    let mut col_1 = Input::new(p.PIN_2, Pull::None);
-    col_1.set_schmitt(true);
-
     let (reader, mut writer) = hid.split();
 
     let inputs = [
@@ -122,41 +119,29 @@ async fn main(spawner: Spawner) {
         Output::new(p.PIN_20, Level::Low),
         Output::new(p.PIN_21, Level::Low),
     ];
-    let keymap = define_keymap!(inputs.len(), outputs.len(), 3, (
-        
-    ));
-    let keyboard = Keyboard::<12, 4, 3>::new(inputs, outputs, keymap);    
+    let keymap = define_keymap!(12, 4, 1, [ 
+        [
+            [Tab, Q, W, F, P, G, J, L, U, Y, Semicolon, Delete],
+            [Escape, A, R, S, T, D, H, N, E, I, O, Quote],
+            [LShift, Z, X, C, V, B, K, M, Comma, Dot, Slash, Enter],
+            [LCtrl, LGui, LAlt, No, TriLayerLower, Space, Backspace, TriLayerUpper, Left, Down, UP, Right]
+        ]
+    ]);
+    let mut keyboard = Keyboard::<12, 4, 1>::new(inputs, outputs, keymap);    
 
     let in_fut = async {
         loop {
-            info!("Waiting for HIGH on pin 4");
-            col_1.wait_for_high().await;
-            info!("HIGH DETECTED");
-
-            // Create a report with the A key pressed. (no shift modifier)
-            let report = KeyboardReport {
-                keycodes: [4, 0, 0, 0, 0, 0],
-                leds: 0,
-                modifier: 0,
-                reserved: 0,
-            };
+            keyboard.scan();
+            
+            let report = keyboard.get_report();
+            
             // Send the report.
-            match writer.write_serialize(&report).await {
+            match writer.write_serialize(report).await {
                 Ok(()) => {}
                 Err(e) => warn!("Failed to send report: {:?}", e),
             };
-            col_1.wait_for_low().await;
-            info!("LOW DETECTED");
-            let report = KeyboardReport {
-                keycodes: [0, 0, 0, 0, 0, 0],
-                leds: 0,
-                modifier: 0,
-                reserved: 0,
-            };
-            match writer.write_serialize(&report).await {
-                Ok(()) => {}
-                Err(e) => warn!("Failed to send report: {:?}", e),
-            };
+
+            keyboard.reset_report();
         }
     };
 

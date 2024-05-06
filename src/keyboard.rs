@@ -1,12 +1,14 @@
 use usbd_hid::descriptor::KeyboardReport;
-use embassy::gpio::{Input, Output};
+use embassy_rp::gpio::{Input, Output};
 use embassy_time::{Duration, Instant, Timer};
 
-mod keycodes;
-use crate::keycodes::*;
+pub mod keycodes;
+use keycodes::*;
 
+#[macro_export]
 macro_rules! define_keymap {
-    ($cols:expr, $rows:expr, $layers:expr, $($key:ident),*) => {{
+    ($cols:expr, $rows:expr, $layers:expr, [$([$([$($key: ident), +]), +]), +]) => {{
+        use $crate::keyboard::keycodes::KeyCode as KeyCode;
         let mut matrix = [[[KeyCode::No; $cols]; $rows]; $layers];
         let mut i = 0;
         $(
@@ -14,7 +16,7 @@ macro_rules! define_keymap {
             $(
                 let mut ci = 0;
                 $(
-                    matrix[i][r][c] = KeyCode::$key;
+                    matrix[i][ri][ci] = KeyCode::$key;
                     ci += 1;
                 )*
                 ri += 1;
@@ -26,31 +28,31 @@ macro_rules! define_keymap {
     }}
 }
 
-pub struct Keyboard<const COLS: usize, const ROWS: usize, const LAYERS: usize> {
-    inputs: [Input; COLS],
-    outputs: [Output; ROWS],
+pub struct Keyboard<'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> {
+    inputs: [Input<'a>; COLS],
+    outputs: [Output<'a>; ROWS],
     keymap: [[[KeyCode; COLS]; ROWS]; LAYERS],
     report: KeyboardReport,
     current_layer: usize,
 }
 
-impl <const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<ROWS, COLS, LAYERS> {
+impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a, COLS, ROWS, LAYERS> {
     pub fn new(
-        inputs: [Input; COLS], 
-        outputs: [Output; ROWS], 
+        inputs: [Input<'a>; COLS], 
+        outputs: [Output<'a>; ROWS], 
         keymap: [[[KeyCode; COLS]; ROWS]; LAYERS]
     ) -> Self {
-        Self {
+        Keyboard::<'a, COLS, ROWS, LAYERS> {
             inputs,
             outputs,
-            keymap: [[[KeyCode; COLS]; ROWS]; LAYERS],
+            keymap,
             report: KeyboardReport {
                 modifier: 0,
                 reserved: 0,
                 leds: 0,
                 keycodes: [0; 6],
             },
-            current_layer: usize,
+            current_layer: 0,
         }
     }
 
@@ -69,11 +71,11 @@ impl <const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<ROWS, 
         for (out_index, output) in self.outputs.iter_mut().enumerate() {
 
             // Pull up output, wait 1us for change
-            output.set_high().ok();
+            output.set_high();
             Timer::after_micros(1).await;
 
-            for(in_index, input) in self.inputs.iter_mut().enummerate() {
-                let high = input.is_high().ok().unwrap_or_default();
+            for(in_index, input) in self.inputs.iter_mut().enumerate() {
+                let high = input.is_high();
                 let key = self.keymap[self.current_layer][out_index][in_index];
 
                 if high {
@@ -91,7 +93,7 @@ impl <const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<ROWS, 
                 }
             }
 
-            output.set_low().ok();
+            output.set_low();
         }
     }
 }
