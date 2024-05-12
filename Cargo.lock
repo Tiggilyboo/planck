@@ -1249,6 +1249,7 @@ name = "planck"
 version = "0.1.0"
 dependencies = [
  "bitfield-struct",
+ "bitflags 2.4.1",
  "cortex-m",
  "cortex-m-rt",
  "cyw43",

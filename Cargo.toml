@@ -25,6 +25,7 @@ fixed = "1.23.1"
 fixed-macro = "1.2"
 bitfield-struct = "0.6"
 num_enum = { version = "0.6.1", default-features = false }
+bitflags = "2.4.1"
 
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7.3"
