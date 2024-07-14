@@ -15,21 +15,21 @@ use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 pub struct PlanckRequestHandler {}
 
 impl RequestHandler for PlanckRequestHandler {
-    fn get_report(&mut self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
+    fn get_report(&self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
         log::info!("Got report for {:?}", id);
         None
     }
 
-    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
+    fn set_report(&self, id: ReportId, data: &[u8]) -> OutResponse {
         log::info!("Set report for {:?}: {:?}", id, data);
         OutResponse::Accepted
     }
 
-    fn set_idle_ms(&mut self, id: Option<ReportId>, dur: u32) {
+    fn set_idle_ms(&self, id: Option<ReportId>, dur: u32) {
         log::info!("Set idle rate for {:?} to {:?}", id, dur);
     }
 
-    fn get_idle_ms(&mut self, id: Option<ReportId>) -> Option<u32> {
+    fn get_idle_ms(&self, id: Option<ReportId>) -> Option<u32> {
         log::info!("Get idle rate for {:?}", id);
         None
     }
