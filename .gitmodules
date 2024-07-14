@@ -1,0 +1,6 @@
+[submodule "btstack"]
+	path = btstack
+	url = https://github.com/bluekitchen/btstack
+[submodule "pico-sdk"]
+	path = pico-sdk
+	url = ./pico-sdk
