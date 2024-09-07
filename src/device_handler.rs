@@ -1,4 +1,3 @@
-
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::*;
@@ -13,7 +12,6 @@ use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config, Handler};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use {defmt_rtt as _, panic_probe as _};
-
 
 pub struct PlanckDeviceHandler {
     configured: AtomicBool,
@@ -50,7 +48,9 @@ impl Handler for PlanckDeviceHandler {
     fn configured(&mut self, configured: bool) {
         self.configured.store(configured, Ordering::Relaxed);
         if configured {
-            log::info!("Device configured, it may now draw up to the configured current limit from Vbus.")
+            log::info!(
+                "Device configured, it may now draw up to the configured current limit from Vbus."
+            )
         } else {
             log::info!("Device is no longer configured, the Vbus current limit is 100mA.");
         }
