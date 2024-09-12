@@ -1,23 +1,13 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use defmt::*;
-use embassy_executor::Spawner;
-use embassy_futures::join::join;
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::{Input, Pull};
-use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_usb::class::hid::{HidReaderWriter, ReportId, RequestHandler, State};
-use embassy_usb::control::OutResponse;
-use embassy_usb::{Builder, Config, Handler};
-use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
+use embassy_usb::Handler;
 use {defmt_rtt as _, panic_probe as _};
 
-pub struct PlanckDeviceHandler {
+pub struct PlanckUsbDeviceHandler {
     configured: AtomicBool,
 }
 
-impl PlanckDeviceHandler {
+impl PlanckUsbDeviceHandler {
     pub fn new() -> Self {
         Self {
             configured: AtomicBool::new(false),
@@ -25,7 +15,7 @@ impl PlanckDeviceHandler {
     }
 }
 
-impl Handler for PlanckDeviceHandler {
+impl Handler for PlanckUsbDeviceHandler {
     fn enabled(&mut self, enabled: bool) {
         self.configured.store(false, Ordering::Relaxed);
         if enabled {

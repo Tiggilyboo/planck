@@ -1,13 +1,15 @@
-use usbd_hid::descriptor::KeyboardReport;
 use embassy_rp::gpio::{Input, Output};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Instant, Timer};
 use num_enum::FromPrimitive;
+use usbd_hid::descriptor::KeyboardReport;
 
 pub mod keycodes;
 use keycodes::*;
 
 pub mod keystate;
 use keystate::*;
+
+use crate::{NUM_COLS, NUM_LAYERS, NUM_ROWS};
 
 pub mod ble;
 
@@ -41,7 +43,20 @@ pub enum Layer {
     Base = 0b00,
     Lower = 0b01,
     Upper = 0b10,
-    Both = 0b11,
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub enum Mode {
+    UsbHid,
+    Ble,
+}
+
+pub trait KeyboardOutput {
+    async fn run(&mut self, report: &KeyboardReport);
+}
+pub trait KeyboardInput {
+    async fn scan(&mut self) -> Option<&KeyboardReport>;
 }
 
 pub struct Keyboard<'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> {
@@ -50,16 +65,21 @@ pub struct Keyboard<'a, const COLS: usize, const ROWS: usize, const LAYERS: usiz
     keys: [[[KeyState; COLS]; ROWS]; LAYERS],
     report: KeyboardReport,
     current_layer: Layer,
+    mode: Mode,
     last_tick: u32,
 }
 
-impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a, COLS, ROWS, LAYERS> {
+impl<'a, const COLS: usize, const ROWS: usize, const LAYERS: usize>
+    Keyboard<'a, COLS, ROWS, LAYERS>
+{
     pub fn new(
-        inputs: [Input<'a>; ROWS], 
-        outputs: [Output<'a>; COLS], 
-        keymap: [[[KeyCode; COLS]; ROWS]; LAYERS]
+        inputs: [Input<'a>; ROWS],
+        outputs: [Output<'a>; COLS],
+        keymap: [[[KeyCode; COLS]; ROWS]; LAYERS],
+        mode: Mode,
     ) -> Self {
-        let mut keys: [[[KeyState; COLS]; ROWS]; LAYERS] = [[[KeyState::default(); COLS]; ROWS]; LAYERS];
+        let mut keys: [[[KeyState; COLS]; ROWS]; LAYERS] =
+            [[[KeyState::default(); COLS]; ROWS]; LAYERS];
         for l in 0..LAYERS {
             for r in 0..ROWS {
                 for c in 0..COLS {
@@ -74,6 +94,7 @@ impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a
             inputs,
             outputs,
             keys,
+            mode,
             report: KeyboardReport {
                 modifier: 0,
                 reserved: 0,
@@ -95,22 +116,31 @@ impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a
         }
     }
 
-    fn process_key_change(pressed: bool, key_code: KeyCode, layer: &mut Layer, report: &mut KeyboardReport) -> bool {
+    fn process_key_change(
+        pressed: bool,
+        key_code: KeyCode,
+        layer: &mut Layer,
+        report: &mut KeyboardReport,
+    ) -> bool {
         match key_code {
-            KeyCode::TriLayerLower => if pressed {
-                *layer = Layer::from(*layer as u8 | Layer::Lower as u8);
-                false
-            } else {
-                *layer = Layer::from(*layer as u8 & !(Layer::Lower as u8));
-                false
-            },
-            KeyCode::TriLayerUpper => if pressed {
-                *layer = Layer::from(*layer as u8 | Layer::Upper as u8);
-                false
-            } else {
-                *layer = Layer::from(*layer as u8 & !(Layer::Upper as u8));
-                false
-            },
+            KeyCode::TriLayerLower => {
+                if pressed {
+                    *layer = Layer::from(*layer as u8 | Layer::Lower as u8);
+                    false
+                } else {
+                    *layer = Layer::from(*layer as u8 & !(Layer::Lower as u8));
+                    false
+                }
+            }
+            KeyCode::TriLayerUpper => {
+                if pressed {
+                    *layer = Layer::from(*layer as u8 | Layer::Upper as u8);
+                    false
+                } else {
+                    *layer = Layer::from(*layer as u8 & !(Layer::Upper as u8));
+                    false
+                }
+            }
 
             // process as normal
             _ => {
@@ -124,7 +154,9 @@ impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a
                 } else {
                     if key_code.is_modifier() {
                         report.modifier &= !key_code.as_modifier_bit();
-                    } else if let Some(i) = report.keycodes.iter().position(|&k| k == key_code as u8) {
+                    } else if let Some(i) =
+                        report.keycodes.iter().position(|&k| k == key_code as u8)
+                    {
                         report.keycodes[i] = 0;
                     }
                 }
@@ -132,8 +164,10 @@ impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a
             }
         }
     }
+}
 
-    pub async fn scan(&mut self) -> bool {
+impl<'a> KeyboardInput for Keyboard<'a, { NUM_COLS }, { NUM_ROWS }, { NUM_LAYERS }> {
+    async fn scan(&mut self) -> Option<&KeyboardReport> {
         log::info!("scan {}", self.last_tick);
 
         let mut send_report = false;
@@ -141,7 +175,6 @@ impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a
 
         // Update matrix state
         for (out_index, output) in self.outputs.iter_mut().enumerate() {
-
             // Pull up output, wait 1us for change
             output.set_high();
             Timer::after_micros(1).await;
@@ -162,13 +195,18 @@ impl <'a, const COLS: usize, const ROWS: usize, const LAYERS: usize> Keyboard<'a
                 key_state.changed = changed;
 
                 if changed {
-                    send_report |= Self::process_key_change(high, key_code, layer, &mut self.report);
+                    send_report |=
+                        Self::process_key_change(high, key_code, layer, &mut self.report);
                 }
             }
 
             output.set_low();
         }
 
-        send_report
+        if send_report {
+            Some(&self.report)
+        } else {
+            None
+        }
     }
 }

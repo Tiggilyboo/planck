@@ -30,7 +30,7 @@ bitflags = "2.4.1"
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7.3"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-futures = { version = "0.3.17", default-features = false, features = ["async-await", "cfg-target-has-atomic", "unstable"] }
+futures = { version = "0.3.30", default-features = false, features = ["async-await", "cfg-target-has-atomic", "unstable"] }
 heapless = "0.8"
 
 embedded-hal-1 = { package = "embedded-hal", version = "1.0.0" }

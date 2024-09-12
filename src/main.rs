@@ -1,31 +1,28 @@
 #![no_std]
 #![no_main]
 
-use cyw43_pio::PioSpi;
-use defmt::*;
+use core::marker;
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
-use embassy_rp::bind_interrupts;
+use embassy_futures::join::{self, join};
 use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::{DMA_CH0, PIO0, USB};
-use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
+use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver as UsbDriver, InterruptHandler as UsbInterruptHandler};
-use embassy_usb::class::hid::{HidReaderWriter, ReportId, State as UsbState};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver as SerialReceiver, Sender as SerialSender, State as SerialState};
-use embassy_usb::control::OutResponse;
-use embassy_usb::{Builder as UsbBuilder, Config as UsbConfig, Handler as UsbHandler};
+use embassy_rp::{bind_interrupts, peripherals, Peripherals};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State as SerialState};
+use embassy_usb::class::hid::{HidReaderWriter, State as UsbState};
+use embassy_usb::{Builder as UsbBuilder, Config as UsbConfig, UsbDevice};
+use futures::future::FusedFuture;
+use futures::{future, Future};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
-use embassy_time::{Duration, Timer};
-use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-mod request_handler;
 mod device_handler;
 mod keyboard;
+mod request_handler;
 
+use device_handler::*;
 use keyboard::*;
 use request_handler::*;
-use device_handler::*;
 
 bind_interrupts!(struct UsbIrqs {
     USBCTRL_IRQ => UsbInterruptHandler<USB>;
@@ -34,7 +31,7 @@ bind_interrupts!(struct UsbIrqs {
 /*
 Planck 12 column x 4 rows
 Pinout:
-    Columns (Right to left): 
+    Columns (Right to left):
         PIN_4 (GP2),
         PIN_5 (GP3),
         PIN_6 (GP4),
@@ -54,64 +51,113 @@ Pinout:
         PIN_26 (GP20),
         PIN_27 (GP21),
 */
+pub const NUM_COLS : usize = 12;
+pub const NUM_ROWS : usize = 4;
+pub const NUM_LAYERS : usize = 3;
+
+type PlanckKeyboard<'a> = Keyboard<'a, NUM_COLS, NUM_ROWS, NUM_LAYERS>;
+
+struct UsbSystem {}
+impl UsbSystem {
+    pub async fn init<'a>(usb_peripheral: USB, enable_hid: bool, serial_logging: bool, input: &mut impl KeyboardInput) {
+        // usb
+        let usb_driver = UsbDriver::new(usb_peripheral, UsbIrqs);
+        let mut usb_config = UsbConfig::new(0xc0de, 0xcafe);
+        usb_config.manufacturer = Some("Simon Willshire");
+        usb_config.product = Some("Planck RP2040");
+        usb_config.serial_number = Some("12345678");
+        usb_config.max_power = 100;
+        usb_config.max_packet_size_0 = 64;
+
+        // Required for windows compatiblity.
+        // https://developer.nordicsemi.com/nRF_Connect_SDK/doc/1.9.1/kconfig/CONFIG_CDC_ACM_IAD.html#help
+        usb_config.device_class = 0xEF;
+        usb_config.device_sub_class = 0x02;
+        usb_config.device_protocol = 0x01;
+        usb_config.composite_with_iads = true;
+
+        let mut config_descriptor = [0; 256];
+        let mut bos_descriptor = [0; 256];
+        let mut msos_descriptor = [0; 256];
+        let mut control_buf = [0; 64];
+        let mut device_handler = PlanckUsbDeviceHandler::new();
+        let mut usb_state = UsbState::new();
+        let mut logger_state = SerialState::new();
+
+        let mut usb_builder = UsbBuilder::new(
+            usb_driver,
+            usb_config,
+            &mut config_descriptor,
+            &mut bos_descriptor,
+            &mut msos_descriptor,
+            &mut control_buf,
+        );
+
+        usb_builder.handler(&mut device_handler);
+
+        // Create classes on the builder.
+        let hid_future = if enable_hid {
+            let hid_config = embassy_usb::class::hid::Config {
+                report_descriptor: KeyboardReport::desc(),
+                request_handler: None,
+                poll_ms: 60,
+                max_packet_size: 64,
+            };
+            let hid = HidReaderWriter::<_, 1, 8>::new(&mut usb_builder, &mut usb_state, hid_config);
+
+            let mut request_handler = PlanckRequestHandler {};
+            let (reader, mut writer) = hid.split();
+            let in_fut = async {
+                loop {
+                    if let Some(report) = input.scan().await {
+                        // Send the report.
+                        match writer.write_serialize(report).await {
+                            Ok(()) => {}
+                            Err(e) => log::info!("Failed to send report: {:?}", e),
+                        };
+                    }
+                }
+            };
+            let out_fut = async {
+                reader.run(false, &mut request_handler).await;
+            };
+
+            join(in_fut, out_fut).await;
+
+            future::ready(())
+        } else {
+            future::ready(())
+        };
+
+        // serial usb
+        let log_future = if serial_logging {
+            let logger_class = CdcAcmClass::new(&mut usb_builder, &mut logger_state, 64);
+            embassy_usb_logger::with_class!(
+                1024,
+                log::LevelFilter::Info,
+                logger_class
+            ).await;
+            future::ready(())
+        } else {
+            future::ready(())
+        };
+
+        let mut usb_device = usb_builder.build();
+        let usb_task = {
+            usb_device.run().await;
+            future::ready(())
+        };
+
+        join(
+            usb_task,
+            join(log_future,hid_future)
+        ).await;
+    }
+}
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-
-    // usb
-    let usb_driver = UsbDriver::new(p.USB, UsbIrqs);
-    let mut usb_config = UsbConfig::new(0xc0de, 0xcafe);
-    usb_config.manufacturer = Some("Simon Willshire");
-    usb_config.product = Some("Planck RP2040");
-    usb_config.serial_number = Some("12345678");
-    usb_config.max_power = 100;
-    usb_config.max_packet_size_0 = 64;
-    
-    // Required for windows compatiblity.
-    // https://developer.nordicsemi.com/nRF_Connect_SDK/doc/1.9.1/kconfig/CONFIG_CDC_ACM_IAD.html#help
-    usb_config.device_class = 0xEF;
-    usb_config.device_sub_class = 0x02;
-    usb_config.device_protocol = 0x01;
-    usb_config.composite_with_iads = true;
-
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut msos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
-    let mut request_handler = PlanckRequestHandler {};
-    let mut device_handler = PlanckDeviceHandler::new();
-    let mut usb_state = UsbState::new();
-    let mut logger_state = SerialState::new();
-
-    let mut usb_builder = UsbBuilder::new(
-        usb_driver,
-        usb_config,
-        &mut config_descriptor,
-        &mut bos_descriptor,
-        &mut msos_descriptor,
-        &mut control_buf,
-    );
-
-    usb_builder.handler(&mut device_handler);
-
-    // Create classes on the builder.
-    let hid_config = embassy_usb::class::hid::Config {
-        report_descriptor: KeyboardReport::desc(),
-        request_handler: None,
-        poll_ms: 60,
-        max_packet_size: 64,
-    };
-    let hid = HidReaderWriter::<_, 1, 8>::new(&mut usb_builder, &mut usb_state, hid_config);
-
-    // serial usb
-    let logger_class = CdcAcmClass::new(&mut usb_builder, &mut logger_state, 64);
-    let log_fut = embassy_usb_logger::with_class!(1024, log::LevelFilter::Info, logger_class);
-    
-    let mut usb = usb_builder.build();
-    let usb_fut = usb.run();
-    
-    let (reader, mut writer) = hid.split();
 
     let outputs = [
         Output::new(p.PIN_13, Level::Low),
@@ -139,7 +185,8 @@ async fn main(spawner: Spawner) {
         i.set_schmitt(true);
     }
 
-    let keymap = define_keymap!(12, 4, 3, [ 
+    #[rustfmt::skip]
+    let keymap = define_keymap!(NUM_COLS, NUM_ROWS, NUM_LAYERS, [ 
         // base
         [
             [Tab, Q, W, F, P, G, J, L, U, Y, Semicolon, Delete],
@@ -162,33 +209,7 @@ async fn main(spawner: Spawner) {
             [LCtrl, LGui, LAlt, No, TriLayerLower, Space, Backspace, TriLayerUpper, Home, PageDown, PageUp, Right]
         ]
     ]);
-    let mut keyboard = Keyboard::<12, 4, 3>::new(inputs, outputs, keymap);    
-
-    let in_fut = async {
-        loop {                     
-            let send_report = keyboard.scan().await;
-
-            if send_report {          
-                let report = keyboard.get_report();
-            
-                // Send the report.
-                match writer.write_serialize(report).await {
-                    Ok(()) => {}
-                    Err(e) => log::info!("Failed to send report: {:?}", e),
-                };
-
-                keyboard.reset_report();
-            }
-
-            //Timer::after_secs(1).await;
-        }
-    };
-
-    let out_fut = async {
-        reader.run(false, &mut request_handler).await;
-    };
-
-    // Run everything concurrently.
-    // If we had made everything `'static` above instead, we could do this using separate tasks instead.
-    join(usb_fut, join(log_fut, join(in_fut, out_fut))).await;
+    let mut keyboard = PlanckKeyboard::new(inputs, outputs, keymap, Mode::Ble);
+    let usb = UsbSystem::init(p.USB, false, true, &mut keyboard).await;
+    
 }
