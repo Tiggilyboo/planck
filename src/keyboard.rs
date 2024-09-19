@@ -12,6 +12,7 @@ use keystate::*;
 use crate::{NUM_COLS, NUM_LAYERS, NUM_ROWS};
 
 pub mod ble;
+pub mod usb;
 
 #[macro_export]
 macro_rules! define_keymap {
@@ -46,16 +47,17 @@ pub enum Layer {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Mode {
     UsbHid,
     Ble,
 }
 
 pub trait KeyboardOutput {
-    async fn run(&mut self, report: &KeyboardReport);
+    async fn run(&mut self);
 }
 pub trait KeyboardInput {
+    fn mode(&self) -> Mode;
     async fn scan(&mut self) -> Option<&KeyboardReport>;
 }
 
@@ -167,6 +169,9 @@ impl<'a, const COLS: usize, const ROWS: usize, const LAYERS: usize>
 }
 
 impl<'a> KeyboardInput for Keyboard<'a, { NUM_COLS }, { NUM_ROWS }, { NUM_LAYERS }> {
+    fn mode(&self) -> Mode {
+        self.mode
+    }
     async fn scan(&mut self) -> Option<&KeyboardReport> {
         log::info!("scan {}", self.last_tick);
 
